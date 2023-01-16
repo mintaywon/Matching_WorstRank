@@ -1,0 +1,829 @@
+---
+title: 'Joint Testing of Mortality & Worst-rank score'
+author: "민태원, 권대영"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r include = F}
+library(optmatch)
+library(MatchIt)
+library(designmatch)
+library(tidyverse)
+library(permute)
+library(lmtest)
+library(sandwich)
+library(cobalt)
+library(randomForest)
+library(CBPS)
+library(marginaleffects)
+library(DescTools)
+source("functions.R")
+```
+
+## 1. Data
+### 1.1 Preprocess (Dividing group A, B, C)
+
+```{r}
+final_r <- read.csv("data_final_death.csv")
+data_set = final_r[, -c(1, 12, 14)]
+str(data_set)
+```
+- covariates: `gender`, `bmi`, `education`, `exercise`, `income`, `smoke`, `alcohol`, `chronic_disease`, `job`, `region1`, `region2`, `age`, `depress5`
+- outcome: `depress6`, `depress7`, `depress8` 
+
+- number of NAs by variable
+```{r}
+colSums(is.na(data_set))
+```
+
+- 1604 treatment, 6127 control
+```{r}
+table(data_set$treatment)
+```
+
+- Histogram for `age` (decrease due to death)
+```{r}
+hist1 = hist(data_set$age, freq = T, main = "No strata, by age", breaks = seq(45,110,5), col = rgb(0,0,0.1,0.1))
+hist(data_set$age[!is.na(data_set$depress7)], freq = T, main = "No strata, by age, at 7th study", breaks = seq(50,100,5), add = T, col = rgb(0,0,0.1,0.3))
+hist(data_set$age[!is.na(data_set$depress8)], freq = T, main = "No strata, by age, at 8th study", breaks = seq(50,100,5), add = T, col = rgb(0,0,0.1,0.5))
+legend("topright", c("6th", "7th", "8th"), fill=c(rgb(0,0,0.1,0.1), rgb(0,0,0.1,0.3), rgb(0,0,0.1,0.5)) )
+```
+
+- Numbers of NAs in each study
+```{r}
+table(data_set$dead6, data_set$depress6 >= 0, useNA = "always")
+table(data_set$dead7, data_set$depress7 >= 0, useNA = "always")
+table(data_set$dead8, data_set$depress8 >= 0, useNA = "always")
+```
+
+
+- `dead6` = 0, `depress6` = NA인 경우는 죽지 않았음이 확실하나(7차 혹은 8차의 outcome이 존재), 이번 조사에 참여하지 않은 집단(87명) $\rightarrow$ A
+- `dead6` = 1 이고, `depress6` = NA인 집단은 확실히 사망한 집단 (264명) $\rightarrow$ B
+- `dead6` = NA 인 경우, 6차 조사에 참여하지 않았으며, 이가 사망으로 인한 것인지 혹은 미참여인지 불분명한 집단 (204명) $\rightarrow$ C
+
+
+### 1.2 각 집단의 비율 관찰 (너무 한쪽에 쏠려있지 않은지)
+
+- A의 비율 관찰
+```{r}
+table(data_set$treatment, data_set$dead6==0 & is.na(data_set$depress6))
+chisq.test(table(data_set$treatment, data_set$dead6==0 & is.na(data_set$depress6)))$p.value
+
+table(data_set$treatment, data_set$dead7==0 & is.na(data_set$depress7))
+chisq.test(table(data_set$treatment, data_set$dead7==0 & is.na(data_set$depress7)))$p.value
+
+table(data_set$treatment, data_set$dead8==0 & is.na(data_set$depress8)) # No NA
+```
+
+B는 worst-rank scoring에 포함시킬 것  
+C는 MAR처리가 다소 불분명함. 우선은, 이를 MAR이라고 가정하고, 제거한 상태에서 분석을 실시하자. (가정 1)
+
+- C의 비율 관찰
+```{r}
+table(data_set$treatment, is.na(data_set$dead6))
+chisq.test(table(data_set$treatment, is.na(data_set$dead6)))$p.value
+table(data_set$treatment, is.na(data_set$dead7))
+chisq.test(table(data_set$treatment, is.na(data_set$dead7)))$p.value
+table(data_set$treatment, is.na(data_set$dead8))
+chisq.test(table(data_set$treatment, is.na(data_set$dead8)))$p.value
+```
+
+마찬가지를 7차와 8차의 경우에도 실시할 수 있다.  
+이 때, 7차와 8차는 점점 죽은 인원이 증가한다. 264 $\rightarrow$ 592 $\rightarrow$ 949명이다. 즉 매 차수마다 대략 3~400명 정도가 사망했음을 알 수 있다.  
+worst-rank score를 부여할 때 5-6차 사이에 죽은 인원과 7-8차 사이에 죽은 인원의 score를 다르게 매긴다.
+
+6차, 7차, 8차 조사가 모두 존재하는 집단 혹은, 6차, 7차, 8차 때 퇴출조사(사망)이 조사된 인원을 대상으로 매칭을 진행.
+
+__우선, C(생사여부를 모름)만 제거한 채로 매칭시킨 뒤 death를 outcome으로 두고 대조군과 처리군을 비교한 뒤, 차이가 없으면 A를 추가로 제거하여 매칭시킨 뒤 worst rank test 진행__
+
+ 
+
+## 2. Primary outcome (mortality)
+
+```{r}
+## 각 6, 7, 8차에서 C만 제거한 data_deleteC_6, data_deleteC_7, data_deleteC_8
+data_deleteC_6 = data_set %>% filter(!is.na(dead6))
+data_deleteC_7 = data_set %>% filter(!is.na(dead7))
+data_deleteC_8 = data_set %>% filter(!is.na(dead8))
+nrow(data_deleteC_6)
+nrow(data_deleteC_7)
+nrow(data_deleteC_8)
+```
+
+### 2.1 outcome = `dead6`
+
+#### 2.1.1 Prepare the Data (PS, CBPS, RF, IPW/SIPW)
+
+- Random Forest
+```{r eval=F}
+rf.6 <- randomForest(treatment~gender + bmi + education + age + exercise + income + 
+               smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+             data=data_deleteC_6, importance=T)
+importance(rf.6, type=2)
+```
+
+- define depress5 group indices
+
+```{r}
+depress5_group = rep(0, length(data_deleteC_6$depress5))
+
+depress5_group[which((data_deleteC_6$depress5 >=10 & data_deleteC_6$depress5 <= 14) == 1)] = 1
+depress5_group[which((data_deleteC_6$depress5 >=15 & data_deleteC_6$depress5 <= 19) == 1)] = 2
+depress5_group[which((data_deleteC_6$depress5 >=20 & data_deleteC_6$depress5 <= 24) == 1)] = 3
+depress5_group[which((data_deleteC_6$depress5 >=25 & data_deleteC_6$depress5 <= 29) == 1)] = 4
+depress5_group[which((data_deleteC_6$depress5 >=30 & data_deleteC_6$depress5 <= 34) == 1)] = 5
+depress5_group[which((data_deleteC_6$depress5 >=35 & data_deleteC_6$depress5 <= 40) == 1)] = 6
+table(data_deleteC_6$treatment, depress5_group, useNA = "always")
+```
+
+
+#### 2.1.2 Pair Matching
+
+- Flip
+
+```{r}
+table(data_deleteC_6$treatment, depress5_group, useNA = "always")
+```
+
+- depress5 group 4, 5에 속하는 사람들이 treatment group에 더 많으므로 두 집단을 flip
+
+```{r}
+data_set_flip = data_deleteC_6
+
+data_set_flip[depress5_group == 4 & data_deleteC_6$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 4 & data_deleteC_6$treatment ==0, ]$treatment = 1
+data_set_flip[depress5_group == 5 & data_deleteC_6$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 5 & data_deleteC_6$treatment ==0, ]$treatment = 1
+
+table(data_set_flip$treatment, depress5_group, useNA = "always")
+```
+
+- match the data
+
+```{r}
+# PS estimation
+propensity.flip <- glm(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, family = binomial, x = TRUE, data = data_set_flip)
+
+# create rank Mahal distance matrix exactly for depress5
+mah.dist.flip = match_on(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+                    within = exactMatch(data_set_flip$treatment ~ depress5_group), data = data_set_flip, method = "rank_mahalanobis")
+
+# add caliper (if logit ps diff > 0.2*sd)
+mah.dist.flip.caliper = addcaliper(mah.dist.flip, data_set_flip$treatment, predict(propensity.flip), calipersd = 0.2, penalty = 1000)
+dimnames(mah.dist.flip.caliper) <- NULL
+
+# add penalty (500 per age diff)
+mah.dist.flip.caliper = addpenalty(mah.dist.flip.caliper, data_set_flip$treatment, data_set_flip$age, penalty = 500)
+
+# pair matching
+pairmatch.6 = matchit(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, data = data_set_flip, method = "optimal", distance = as.matrix(mah.dist.flip.caliper), ratio = 1)
+
+summary(pairmatch.6)$nn
+```
+
+```{r echo = F}
+##### get matched set index
+
+#remove the discarded treatment values.
+match.matrix <- pairmatch.6$match.matrix %>% na.omit()
+
+#indexing
+treated.subject.index.raw <- match.matrix %>% rownames() %>% as.numeric()
+matched.control.subject.index.raw <- match.matrix %>% as.numeric()
+
+treated.subject.index.tmp1 <- treated.subject.index.raw[data_deleteC_6$treatment[treated.subject.index.raw] == 1]
+treated.subject.index.tmp2 <- matched.control.subject.index.raw[data_deleteC_6$treatment[matched.control.subject.index.raw] == 1]
+
+matched.control.subject.index.tmp1 <- matched.control.subject.index.raw[data_deleteC_6$treatment[matched.control.subject.index.raw] == 0]
+matched.control.subject.index.tmp2 <- treated.subject.index.raw[data_deleteC_6$treatment[treated.subject.index.raw] == 0]
+
+treated.subject.index.6 <- c(treated.subject.index.tmp1, treated.subject.index.tmp2)
+matched.control.subject.index.6 <- c(matched.control.subject.index.tmp1, matched.control.subject.index.tmp2)
+```
+
+
+- check covariate balance
+
+```{r echo = F}
+Xmat=propensity.flip$x[,-1];
+treatedmat=Xmat[data_deleteC_6$treatment==1,]
+controlmat.before=Xmat[data_deleteC_6$treatment==0,]
+
+controlmean.before=apply(controlmat.before,2,mean);
+controlvar=apply(controlmat.before,2,var);
+treatmean=apply(treatedmat,2,mean);
+treatvar=apply(treatedmat,2,var);
+
+stand.diff.before=(treatmean-controlmean.before)/sqrt((treatvar+controlvar)/2);
+
+# Standardized differences after matching
+treatedmat.after = Xmat[treated.subject.index.6, ]
+controlmat.after=Xmat[matched.control.subject.index.6,];
+treatmean.after = apply(treatedmat.after, 2, mean)
+controlmean.after=apply(controlmat.after,2,mean);
+
+stand.diff.after=(treatmean.after-controlmean.after)/sqrt((treatvar+controlvar)/2);
+round(cbind(stand.diff.before, stand.diff.after),3)
+```
+
+
+```{r echo=F}
+smd0 <- abs(cbind(stand.diff.before, stand.diff.after))
+SMDplot(Xmat, smd0, names=c("unmatched", "matched"), title="6th Study")
+```
+
+
+#### 2.1.3 test for mortality
+
+```{r}
+outcome6.treatment <- data_deleteC_6$dead6[treated.subject.index.6]
+outcome6.matched.control<- data_deleteC_6$dead6[matched.control.subject.index.6]
+outcome.table6 = table(outcome6.treatment, outcome6.matched.control)
+outcome.table6
+```
+
+- Mcnemar test (two-sided)
+```{r}
+mcnemar.test(outcome.table6)$p.value / 2
+```
+- Exact binomial test
+```{r}
+binom.test(c(outcome.table6[2,1], outcome.table6[1,2]), alternative="greater")$p.value
+```
+
+
+#### 2.1.4 Sensitivity Analysis for McNemar's test
+
+```{r}
+sens.analysis.mcnemar=function(D,Tobs,Gamma){
+  p.positive = Gamma/(1+Gamma);
+  p.negative = 1/(1+Gamma);
+  lower.bound = 1-pbinom(Tobs-1,D,p.negative);
+  upper.bound = 1-pbinom(Tobs-1,D,p.positive);
+  
+  exp.p.positive = p.positive*D #E()
+  exp.p.negative = p.negative*D
+  var.p.positive = p.positive*(1-p.positive)*D
+  var.p.negative = p.negative*(1-p.negative)*D
+  upper.bound.approx = 1 - pnorm((Tobs-exp.p.positive)/sqrt(var.p.positive))
+  lower.bound.approx = 1 - pnorm((Tobs-exp.p.negative)/sqrt(var.p.negative))
+  
+  list(lower=lower.bound,upper=upper.bound,
+       lower.appx = lower.bound.approx,
+       upper.appx = upper.bound.approx);
+}
+```
+
+- $\Gamma = 1.05$
+
+```{r}
+Gamma.grid = seq(1, 1.1, by=0.01)
+lower.b = upper.b = rep(NA, length(Gamma.grid))
+
+# 6th
+for(i in 1:length(Gamma.grid)){
+  sens.res = sens.analysis.mcnemar(D = 156, Tobs = 91, Gamma = Gamma.grid[i])
+  lower.b[i] = sens.res$lower
+  upper.b[i] = sens.res$upper
+}
+data.frame("Gamma"=Gamma.grid, "lower.b"=round(lower.b,4), "upper.b"=round(upper.b,4))
+```
+
+```{r}
+(Gamma.6.death = Gamma.grid[max(which(upper.b < 0.05))])
+```
+
+### 2.2 outcome = `dead7`
+
+#### 2.2.1 Prepare the Data (PS, CBPS, RF, IPW/SIPW)
+
+- Random Forest
+```{r eval=F}
+rf.7 <- randomForest(treatment~gender + bmi + education + age + exercise + income + 
+               smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+             data=data_deleteC_7, importance=T)
+importance(rf.7, type=2)
+```
+
+
+- define depress5 group indices
+
+```{r}
+depress5_group = rep(0, length(data_deleteC_7$depress5))
+
+depress5_group[which((data_deleteC_7$depress5 >=10 & data_deleteC_7$depress5 <= 14) == 1)] = 1
+depress5_group[which((data_deleteC_7$depress5 >=15 & data_deleteC_7$depress5 <= 19) == 1)] = 2
+depress5_group[which((data_deleteC_7$depress5 >=20 & data_deleteC_7$depress5 <= 24) == 1)] = 3
+depress5_group[which((data_deleteC_7$depress5 >=25 & data_deleteC_7$depress5 <= 29) == 1)] = 4
+depress5_group[which((data_deleteC_7$depress5 >=30 & data_deleteC_7$depress5 <= 34) == 1)] = 5
+depress5_group[which((data_deleteC_7$depress5 >=35 & data_deleteC_7$depress5 <= 40) == 1)] = 6
+table(data_deleteC_7$treatment, depress5_group, useNA = "always")
+```
+
+#### 2.2.2 Pair Matching
+
+- Flip
+
+```{r}
+table(data_deleteC_7$treatment, depress5_group, useNA = "always")
+```
+
+- depress5 group 4, 5에 속하는 사람들이 treatment group에 더 많으므로 두 집단을 flip
+```{r}
+data_set_flip = data_deleteC_7
+
+data_set_flip[depress5_group == 4 & data_deleteC_7$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 4 & data_deleteC_7$treatment ==0, ]$treatment = 1
+data_set_flip[depress5_group == 5 & data_deleteC_7$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 5 & data_deleteC_7$treatment ==0, ]$treatment = 1
+
+table(data_set_flip$treatment, depress5_group, useNA = "always")
+```
+
+- match the data
+
+```{r}
+# PS estimation
+propensity.flip <- glm(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, family = binomial, x = TRUE, data = data_set_flip)
+
+# create rank Mahal distance matrix exactly for depress5
+mah.dist.flip = match_on(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+                    within = exactMatch(data_set_flip$treatment ~ depress5_group), data = data_set_flip, method = "rank_mahalanobis")
+
+# add caliper (if logit ps diff > 0.2*sd)
+mah.dist.flip.caliper = addcaliper(mah.dist.flip, data_set_flip$treatment, predict(propensity.flip), calipersd = 0.2, penalty = 1000)
+dimnames(mah.dist.flip.caliper) <- NULL
+
+# add penalty (500 per age diff)
+mah.dist.flip.caliper = addpenalty(mah.dist.flip.caliper, data_set_flip$treatment, data_set_flip$age, penalty = 500)
+
+# pair matching
+pairmatch.7 = matchit(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, data = data_set_flip, method = "optimal", distance = as.matrix(mah.dist.flip.caliper), ratio = 1)
+
+summary(pairmatch.7)$nn
+```
+
+- get matched set index
+
+```{r echo = F}
+#remove the discarded treatment values.
+match.matrix <- pairmatch.7$match.matrix %>% na.omit()
+
+#indexing
+treated.subject.index.raw <- match.matrix %>% rownames() %>% as.numeric()
+matched.control.subject.index.raw <- match.matrix %>% as.numeric()
+
+treated.subject.index.tmp1 <- treated.subject.index.raw[data_deleteC_7$treatment[treated.subject.index.raw] == 1]
+treated.subject.index.tmp2 <- matched.control.subject.index.raw[data_deleteC_7$treatment[matched.control.subject.index.raw] == 1]
+
+matched.control.subject.index.tmp1 <- matched.control.subject.index.raw[data_deleteC_7$treatment[matched.control.subject.index.raw] == 0]
+matched.control.subject.index.tmp2 <- treated.subject.index.raw[data_deleteC_7$treatment[treated.subject.index.raw] == 0]
+
+treated.subject.index.7 <- c(treated.subject.index.tmp1, treated.subject.index.tmp2)
+matched.control.subject.index.7 <- c(matched.control.subject.index.tmp1, matched.control.subject.index.tmp2)
+```
+
+
+```{r echo = F}
+#### check covariate balance
+Xmat=propensity.flip$x[,-1];
+treatedmat=Xmat[data_deleteC_7$treatment==1,]
+controlmat.before=Xmat[data_deleteC_7$treatment==0,]
+
+controlmean.before=apply(controlmat.before,2,mean);
+controlvar=apply(controlmat.before,2,var);
+treatmean=apply(treatedmat,2,mean);
+treatvar=apply(treatedmat,2,var);
+
+stand.diff.before=(treatmean-controlmean.before)/sqrt((treatvar+controlvar)/2);
+
+# Standardized differences after matching
+treatedmat.after = Xmat[treated.subject.index.7, ]
+controlmat.after=Xmat[matched.control.subject.index.7,];
+treatmean.after = apply(treatedmat.after, 2, mean)
+controlmean.after=apply(controlmat.after,2,mean);
+
+stand.diff.after=(treatmean.after-controlmean.after)/sqrt((treatvar+controlvar)/2);
+round(cbind(stand.diff.before, stand.diff.after),3)
+```
+
+
+```{r echo=F}
+smd0 <- abs(cbind(stand.diff.before, stand.diff.after))
+SMDplot(Xmat, smd0, names=c("unmatched", "matched"), title="7th Study")
+```
+
+
+#### 2.2.3 Test for mortality
+
+```{r}
+outcome7.treatment <- data_deleteC_7$dead7[treated.subject.index.7]
+outcome7.matched.control<- data_deleteC_7$dead7[matched.control.subject.index.7]
+outcome.table7 = table(outcome7.treatment, outcome7.matched.control)
+outcome.table7
+```
+
+- Mcnemar test (two-sided)
+```{r}
+mcnemar.test(outcome.table7)$p.value / 2
+```
+
+- Exact binomial test
+```{r}
+binom.test(c(outcome.table7[2,1], outcome.table7[1,2]), alternative="greater")$p.value
+```
+
+
+### 2.3 outcome = `dead8`
+
+#### 2.3.1 Prepare the Data (PS, CBPS, RF, IPW/SIPW)
+
+- Random Forest
+```{r eval=F}
+rf.8 <- randomForest(treatment~gender + bmi + education + age + exercise + income + 
+               smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+             data=data_deleteC_8, importance=T)
+importance(rf.8, type=2)
+```
+
+
+- define depress5 group indices
+
+```{r}
+depress5_group = rep(0, length(data_deleteC_8$depress5))
+
+depress5_group[which((data_deleteC_8$depress5 >=10 & data_deleteC_8$depress5 <= 14) == 1)] = 1
+depress5_group[which((data_deleteC_8$depress5 >=15 & data_deleteC_8$depress5 <= 19) == 1)] = 2
+depress5_group[which((data_deleteC_8$depress5 >=20 & data_deleteC_8$depress5 <= 24) == 1)] = 3
+depress5_group[which((data_deleteC_8$depress5 >=25 & data_deleteC_8$depress5 <= 29) == 1)] = 4
+depress5_group[which((data_deleteC_8$depress5 >=30 & data_deleteC_8$depress5 <= 34) == 1)] = 5
+depress5_group[which((data_deleteC_8$depress5 >=35 & data_deleteC_8$depress5 <= 40) == 1)] = 6
+```
+
+
+#### 2.3.2 Pair Matching
+
+- Flip
+
+```{r}
+table(data_deleteC_8$treatment, depress5_group, useNA = "always")
+```
+
+- depress5 group 4, 5에 속하는 사람들이 treatment group에 더 많으므로 두 집단을 flip
+```{r}
+data_set_flip = data_deleteC_8
+
+data_set_flip[depress5_group == 4 & data_deleteC_8$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 4 & data_deleteC_8$treatment ==0, ]$treatment = 1
+data_set_flip[depress5_group == 5 & data_deleteC_8$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 5 & data_deleteC_8$treatment ==0, ]$treatment = 1
+
+table(data_set_flip$treatment, depress5_group, useNA = "always")
+```
+
+- match the data
+
+```{r}
+# PS estimation
+propensity.flip <- glm(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, family = binomial, x = TRUE, data = data_set_flip)
+
+# create rank Mahal distance matrix exactly for depress5
+mah.dist.flip = match_on(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+                    within = exactMatch(data_set_flip$treatment ~ depress5_group), data = data_set_flip, method = "rank_mahalanobis")
+
+# add caliper (if logit ps diff > 0.2*sd)
+mah.dist.flip.caliper = addcaliper(mah.dist.flip, data_set_flip$treatment, predict(propensity.flip), calipersd = 0.2, penalty = 1000)
+dimnames(mah.dist.flip.caliper) <- NULL
+
+# add penalty (500 per age diff)
+mah.dist.flip.caliper = addpenalty(mah.dist.flip.caliper, data_set_flip$treatment, data_set_flip$age, penalty = 500)
+
+# pair matching
+pairmatch.8 = matchit(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, data = data_set_flip, method = "optimal", distance = as.matrix(mah.dist.flip.caliper), ratio = 1)
+
+summary(pairmatch.8)$nn
+```
+
+- get matched set index
+
+```{r echo = F}
+#remove the discarded treatment values.
+match.matrix <- pairmatch.8$match.matrix %>% na.omit()
+
+#indexing
+treated.subject.index.raw <- match.matrix %>% rownames() %>% as.numeric()
+matched.control.subject.index.raw <- match.matrix %>% as.numeric()
+
+treated.subject.index.tmp1 <- treated.subject.index.raw[data_deleteC_8$treatment[treated.subject.index.raw] == 1]
+treated.subject.index.tmp2 <- matched.control.subject.index.raw[data_deleteC_8$treatment[matched.control.subject.index.raw] == 1]
+
+matched.control.subject.index.tmp1 <- matched.control.subject.index.raw[data_deleteC_8$treatment[matched.control.subject.index.raw] == 0]
+matched.control.subject.index.tmp2 <- treated.subject.index.raw[data_deleteC_8$treatment[treated.subject.index.raw] == 0]
+
+treated.subject.index.8 <- c(treated.subject.index.tmp1, treated.subject.index.tmp2)
+matched.control.subject.index.8 <- c(matched.control.subject.index.tmp1, matched.control.subject.index.tmp2)
+```
+
+
+```{r echo = F}
+#### check covariate balance
+Xmat=propensity.flip$x[,-1];
+treatedmat=Xmat[data_deleteC_8$treatment==1,]
+controlmat.before=Xmat[data_deleteC_8$treatment==0,]
+
+controlmean.before=apply(controlmat.before,2,mean);
+controlvar=apply(controlmat.before,2,var);
+treatmean=apply(treatedmat,2,mean);
+treatvar=apply(treatedmat,2,var);
+
+stand.diff.before=(treatmean-controlmean.before)/sqrt((treatvar+controlvar)/2);
+
+# Standardized differences after matching
+treatedmat.after = Xmat[treated.subject.index.8, ]
+controlmat.after=Xmat[matched.control.subject.index.8,];
+treatmean.after = apply(treatedmat.after, 2, mean)
+controlmean.after=apply(controlmat.after,2,mean);
+
+stand.diff.after=(treatmean.after-controlmean.after)/sqrt((treatvar+controlvar)/2);
+round(cbind(stand.diff.before, stand.diff.after),3)
+```
+
+
+```{r echo=F}
+smd0 <- abs(cbind(stand.diff.before, stand.diff.after))
+SMDplot(Xmat, smd0, names=c("unmatched", "matched"), title="8th Study")
+```
+
+
+#### 2.3.3 Test for mortality
+
+```{r}
+outcome8.treatment <- data_deleteC_8$dead8[treated.subject.index.8]
+outcome8.matched.control<- data_deleteC_8$dead8[matched.control.subject.index.8]
+outcome.table8 = table(outcome8.treatment, outcome8.matched.control)
+outcome.table8
+```
+
+- Mcnemar test (two-sided)
+```{r}
+mcnemar.test(outcome.table8)$p.value / 2
+```
+
+- Exact binomial test
+```{r}
+binom.test(c(outcome.table8[2,1], outcome.table8[1,2]), alternative="greater")$p.value
+```
+
+
+## 3. Worst-rank score (mortality + depress)
+
+### 3.1 전처리
+
+```{r}
+##A와 C사라지는 코드
+data_set_cleaned = data_set %>% filter((!is.na(depress8) & !is.na(depress7) & !is.na(depress6)) | dead8 == 1)
+nrow(data_set_cleaned)
+## worst-rank 부여
+data_set_cleaned$depress8[data_set_cleaned$dead8 == 1] <- 1000
+data_set_cleaned$depress7[data_set_cleaned$dead7 == 1] <- 1000.1
+data_set_cleaned$depress8[data_set_cleaned$dead7 == 1] <- 1000.1
+data_set_cleaned$depress6[data_set_cleaned$dead6 == 1] <- 1000.2
+data_set_cleaned$depress7[data_set_cleaned$dead6 == 1] <- 1000.2
+data_set_cleaned$depress8[data_set_cleaned$dead6 == 1] <- 1000.2
+
+## 6차와 7차에서는 depress 척도가 NA인 경우가 존재한다. -> 6차의 예시로, 7 혹은 8차 때 사망했고,  6차 때 미조사된 인원.
+## 이런 인원들 제거한다. 
+table(data_set_cleaned$treatment, data_set_cleaned$depress6, useNA = "always")
+data_set_cleaned = data_set_cleaned %>% filter((!is.na(depress8) & !is.na(depress7) & !is.na(depress6)))
+table(data_set_cleaned$treatment, data_set_cleaned$depress6, useNA = "always")
+```
+
+```{r}
+table(data_set_cleaned$dead6, data_set_cleaned$depress6 >= 0, useNA = "always")
+table(data_set_cleaned$dead7, data_set_cleaned$depress7 >= 0, useNA = "always")
+table(data_set_cleaned$dead8, data_set_cleaned$depress8 >= 0, useNA = "always")
+```
+
+```{r}
+par(mfrow = c(1,3))
+barplot(table(data_set_cleaned$depress6), main = "depress6")
+barplot(table(data_set_cleaned$depress7), main = "depress7")
+barplot(table(data_set_cleaned$depress8), main = "depress8")
+```
+
+6차때 사망한 인원은 1000.2, 7차 때 사망한 인원은 1000.1, 8차 때 사망한 인원은 1000의 score를 부여했다.  
+총 표본은 6824 명으로, 기존 데이터의 총 표본은 7731명이었다. NA들이 대략 900명 빠진 상황이다.  
+data_set_cleaned에는 depress6/7/8에 NA가 존재하지 않는다. 10~40, 1000, 1000.1, 1000.2의 범위를 지닌다. 
+
+
+
+- define depress5 group indices
+```{r}
+depress5_group = rep(0, length(data_set_cleaned$depress5))
+
+depress5_group[which((data_set_cleaned$depress5 >=10 & data_set_cleaned$depress5 <= 14) == 1)] = 1
+depress5_group[which((data_set_cleaned$depress5 >=15 & data_set_cleaned$depress5 <= 19) == 1)] = 2
+depress5_group[which((data_set_cleaned$depress5 >=20 & data_set_cleaned$depress5 <= 24) == 1)] = 3
+depress5_group[which((data_set_cleaned$depress5 >=25 & data_set_cleaned$depress5 <= 29) == 1)] = 4
+depress5_group[which((data_set_cleaned$depress5 >=30 & data_set_cleaned$depress5 <= 34) == 1)] = 5
+depress5_group[which((data_set_cleaned$depress5 >=35 & data_set_cleaned$depress5 <= 40) == 1)] = 6
+table(data_set_cleaned$treatment, depress5_group, useNA = "always")
+```
+
+- Propensity Score estimation
+
+```{r}
+propensity <- glm(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, family = binomial, x = TRUE, data = data_set_cleaned)
+propensity_logit <- predict(propensity)
+propensity_score <- predict(propensity,type = "response")
+```
+
+- Random Forest
+```{r eval=F}
+rf <- randomForest(treatment~gender + bmi + education + age + exercise + income + 
+               smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+             data=data_set_cleaned, importance=T)
+importance(rf, type=2)
+```
+
+
+### 3.2 Pair Matching
+
+#### 3.2.1 Flip
+```{r}
+depress5_group = rep(0, length(data_set_cleaned$depress5))
+
+depress5_group[which((data_set_cleaned$depress5 >=10 & data_set_cleaned$depress5 <= 14) == 1)] = 1
+depress5_group[which((data_set_cleaned$depress5 >=15 & data_set_cleaned$depress5 <= 19) == 1)] = 2
+depress5_group[which((data_set_cleaned$depress5 >=20 & data_set_cleaned$depress5 <= 24) == 1)] = 3
+depress5_group[which((data_set_cleaned$depress5 >=25 & data_set_cleaned$depress5 <= 29) == 1)] = 4
+depress5_group[which((data_set_cleaned$depress5 >=30 & data_set_cleaned$depress5 <= 34) == 1)] = 5
+depress5_group[which((data_set_cleaned$depress5 >=35 & data_set_cleaned$depress5 <= 40) == 1)] = 6
+table(data_set_cleaned$treatment, depress5_group, useNA = "always")
+
+data_set_flip = data_set_cleaned
+
+data_set_flip[depress5_group == 4 & data_set_cleaned$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 4 & data_set_cleaned$treatment ==0, ]$treatment = 1
+data_set_flip[depress5_group == 5 & data_set_cleaned$treatment ==1, ]$treatment = 0
+data_set_flip[depress5_group == 5 & data_set_cleaned$treatment ==0, ]$treatment = 1
+
+table(data_set_flip$treatment, depress5_group, useNA = "always")
+```
+
+#### 3.2.2 match the data
+
+```{r}
+propensity.flip <- glm(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, family = binomial, x = TRUE, data = data_set_flip)
+
+mah.dist.flip = match_on(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5,
+                    within = exactMatch(data_set_flip$treatment ~ depress5_group), data = data_set_flip, method = "rank_mahalanobis")
+
+mah.dist.flip.caliper = addcaliper(mah.dist.flip, data_set_flip$treatment, predict(propensity.flip), calipersd = 0.2, penalty = 1000)
+dimnames(mah.dist.flip.caliper) <- NULL
+
+mah.dist.flip.caliper = addpenalty(mah.dist.flip.caliper, data_set_flip$treatment, data_set_flip$age, penalty = 30)
+
+pairmatch = matchit(treatment ~ gender + bmi + education + age + exercise + income + smoke + alcohol + chronic_disease + job + region1 + region2 + depress5, data = data_set_flip, method = "optimal", distance = as.matrix(mah.dist.flip.caliper), ratio = 1)
+
+summary(pairmatch)$nn
+```
+
+
+#### 3.2.3 get matched set index
+
+```{r echo = F}
+#remove the discarded treatment values.
+match.matrix <- pairmatch$match.matrix %>% na.omit()
+
+#indexing
+treated.subject.index.raw <- match.matrix %>% rownames() %>% as.numeric()
+matched.control.subject.index.raw <- match.matrix %>% as.numeric()
+
+treated.subject.index.tmp1 <- treated.subject.index.raw[data_set_cleaned$treatment[treated.subject.index.raw] == 1]
+treated.subject.index.tmp2 <- matched.control.subject.index.raw[data_set_cleaned$treatment[matched.control.subject.index.raw] == 1]
+
+matched.control.subject.index.tmp1 <- matched.control.subject.index.raw[data_set_cleaned$treatment[matched.control.subject.index.raw] == 0]
+matched.control.subject.index.tmp2 <- treated.subject.index.raw[data_set_cleaned$treatment[treated.subject.index.raw] == 0]
+
+treated.subject.index <- c(treated.subject.index.tmp1, treated.subject.index.tmp2)
+matched.control.subject.index <- c(matched.control.subject.index.tmp1, matched.control.subject.index.tmp2)
+length(treated.subject.index)
+length(matched.control.subject.index)
+```
+
+
+#### 3.2.4 check covariate balance
+
+```{r echo = F}
+Xmat=propensity.flip$x[,-1];
+treatedmat=Xmat[data_set_cleaned$treatment==1,]
+controlmat.before=Xmat[data_set_cleaned$treatment==0,]
+
+controlmean.before=apply(controlmat.before,2,mean);
+controlvar=apply(controlmat.before,2,var);
+treatmean=apply(treatedmat,2,mean);
+treatvar=apply(treatedmat,2,var);
+
+stand.diff.before=(treatmean-controlmean.before)/sqrt((treatvar+controlvar)/2);
+
+# Standardized differences after matching
+treatedmat.after = Xmat[treated.subject.index, ]
+controlmat.after=Xmat[matched.control.subject.index,];
+treatmean.after = apply(treatedmat.after, 2, mean)
+controlmean.after=apply(controlmat.after,2,mean);
+
+
+stand.diff.after=(treatmean.after-controlmean.after)/sqrt((treatvar+controlvar)/2);
+
+cbind(stand.diff.before, stand.diff.after)
+```
+
+
+```{r}
+smd0 <- cbind(stand.diff.before, stand.diff.after)
+SMDplot(Xmat, abs(smd0), names=c("unmatched", "matched"), title="Pair Matching")
+```
+
+
+#### 3.2.5 Wilcoxon's signed rank test
+
+
+```{r}
+outcome6.treatment <- data_set_cleaned$depress6[treated.subject.index]
+outcome6.matched.control<- data_set_cleaned$depress6[matched.control.subject.index]
+
+outcome7.treatment <- data_set_cleaned$depress7[treated.subject.index]
+outcome7.matched.control<- data_set_cleaned$depress7[matched.control.subject.index]
+
+outcome8.treatment <- data_set_cleaned$depress8[treated.subject.index]
+outcome8.matched.control<- data_set_cleaned$depress8[matched.control.subject.index]
+
+# Wilcoxon signed rank test
+pval6 = wilcox.test(outcome6.treatment,outcome6.matched.control,paired=TRUE,conf.int=TRUE)$p.value
+pval7 = wilcox.test(outcome7.treatment,outcome7.matched.control,paired=TRUE,conf.int=TRUE)$p.value
+pval8 = wilcox.test(outcome8.treatment,outcome8.matched.control,paired=TRUE,conf.int=TRUE)$p.value
+
+c("6th"=pval6, "7th"=pval7, "8th"=pval8)
+```
+
+#### 3.2.6 Sensitivity Analysis
+
+```{r}
+sens.analysis.signedrank=function(diff,Gamma){
+  rk = rank(abs(diff))
+  s1 = 1*(diff>0)
+  s2 = 1*(diff<0)
+  W = sum(s1*rk)
+  d.s = rk*(abs(diff) > 0)
+  Eplus=sum(d.s*Gamma)/(1+Gamma);
+  Eminus=sum(d.s)/(1+Gamma);
+  V=sum(d.s^2*Gamma)/((1+Gamma)^2);
+  Dplus=(W-Eplus)/sqrt(V);
+  Dminus=(W-Eminus)/sqrt(V);
+  list(lower=1-pnorm(Dminus),upper=1-pnorm(Dplus),
+       Dminus = Dminus, Dplus = Dplus);
+}
+```
+
+```{r}
+diff6 = outcome6.treatment-outcome6.matched.control
+diff7 = outcome7.treatment-outcome7.matched.control
+diff8 = outcome8.treatment-outcome8.matched.control
+
+Gamma.grid = seq(1, 1.3, by=0.01)
+lower.b = upper.b = rep(NA, length(Gamma.grid))
+
+# 6th
+for(i in 1:length(Gamma.grid)){
+  sens.res = sens.analysis.signedrank(diff = diff6, Gamma = Gamma.grid[i])
+  lower.b[i] = sens.res$lower
+  upper.b[i] = sens.res$upper
+}
+data.frame("Gamma"=Gamma.grid, "lower.b"=round(lower.b,1), "upper.b"=round(upper.b,4))
+(Gamma.6.worstrank = Gamma.grid[max(which(upper.b<0.05))])
+
+# 7th
+for(i in 1:length(Gamma.grid)){
+  sens.res = sens.analysis.signedrank(diff = diff7, Gamma = Gamma.grid[i])
+  lower.b[i] = sens.res$lower
+  upper.b[i] = sens.res$upper
+}
+data.frame("Gamma"=Gamma.grid, "lower.b"=round(lower.b,1), "upper.b"=round(upper.b,4))
+(Gamma.7 = Gamma.grid[max(which(upper.b<0.05))])
+
+# 8th
+for(i in 1:length(Gamma.grid)){
+  sens.res = sens.analysis.signedrank(diff = diff8, Gamma = Gamma.grid[i])
+  lower.b[i] = sens.res$lower
+  upper.b[i] = sens.res$upper
+}
+data.frame("Gamma"=Gamma.grid, "lower.b"=round(lower.b,1), "upper.b"=round(upper.b,4))
+(Gamma.8 = Gamma.grid[max(which(upper.b<0.05))])
+```
+
+```{r}
+matrix(data=c(Gamma.6.death, NA, NA, Gamma.6.worstrank, Gamma.7, Gamma.8), 
+       nrow=2, byrow=T, dimnames=list(c("death", "worst rank"), c("6th", "7th", "8th")))
+```
+
