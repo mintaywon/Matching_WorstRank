@@ -34,8 +34,7 @@ source("mvfunctions.R")
 
 ### (a) Survival time follows exponential distribution
 
-#### Power for sequential test, used 0.025, 0.025 as alpha
-
+#### Power for sequential test, used 3 pairs of significance level
 
 ```{r}
 #Define parameters 
@@ -127,6 +126,7 @@ simulate.exp.both <- function(n, q2, HR, Delta, time, rho_X, rho_t){
 }
 ```
 
+
 ```{r}
 power.exp.seq.1 = array(data = NA, dim = c(length(q2), length(Delta), length(HR)), 
                     dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), 
@@ -207,6 +207,7 @@ exp.seq.1.q2mid
 cat("sequential testing simulation power, rows are Delta, cols are HR, q2 = 0.9, beta = 0.0125\n")
 exp.seq.1.q2high
 ```
+
 #### beta = 0.025
 
 ```{r}
@@ -340,11 +341,11 @@ exp.truncP.q2high
 cat("Difference, (sequential testing) - (truncatedP method)\n")
 
 cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
-exp.seq.q2low - exp.truncP.q2low
+exp.seq.2.q2low - exp.truncP.q2low
 cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
-exp.seq.q2mid - exp.truncP.q2mid
+exp.seq.2.q2mid - exp.truncP.q2mid
 cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
-exp.seq.q2high - exp.truncP.q2high
+exp.seq.2.q2high - exp.truncP.q2high
 ```
 
 #### results without adjustment of correlation between p-values
@@ -363,15 +364,16 @@ exp.truncP.naive.q2mid
 cat("truncatedP simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
 exp.truncP.naive.q2high
 ```
+
 ```{r}
 cat("Difference, (sequential testing) - (truncatedP method)\n")
 
 cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
-exp.seq.q2low - exp.truncP.naive.q2low
+exp.seq.2.q2low - exp.truncP.naive.q2low
 cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
-exp.seq.q2mid - exp.truncP.naive.q2mid
+exp.seq.2.q2mid - exp.truncP.naive.q2mid
 cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
-exp.seq.q2high - exp.truncP.naive.q2high
+exp.seq.2.q2high - exp.truncP.naive.q2high
 ```
 
 
