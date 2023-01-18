@@ -197,6 +197,11 @@ power.exp.truncP = array(data = NA, dim = c(length(q2), length(Delta), length(HR
                                     c(0.0, 0.05, 0.1, 0.15, 0.20),
                                     c(1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30)))
 
+power.exp.truncP.naive = array(data = NA, dim = c(length(q2), length(Delta), length(HR)),
+                    dimnames = list(c("q2=60%", "q2=80%", "q2=90%"),
+                                    c(0.0, 0.05, 0.1, 0.15, 0.20),
+                                    c(1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30)))
+# naive is for truncatedP without adjustment for correlation between p-vals
 set.seed(123)
 
 pval.transform <- function(pvals, r){
@@ -213,15 +218,18 @@ for (i in 1:length(q2)) {
       print(HR[k])
       count = 0
       total = 0
+      count.naive = 0
+      total.naive = 0
+      pvals = array(data = NA, dim = c(N, 2))
       pvals.forcov = array(data = NA, dim = c(N, 2))
       for (l in c(1:N)){
-        pvals.forcov[l,] = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
+        pvals[l,] = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
       }
-      r = cor(pvals.forcov)[1,2]
-      cat("cor matrix: ", cor(pvals.forcov))
+      r = cor(pvals)[1,2]
+      cat("cor matrix: ", cor(pvals))
       cat("For q2: ", q2[i], ", Delta: ",Delta[j], ", HR: ",HR[k])
       for (l in c(1:N)){
-        pvals.forcov[l,] = pval.transform(pvals.forcov[l,], r)
+        pvals.forcov[l,] = pval.transform(pvals[l,], r)
         if (!is.finite(pvals.forcov[l,1]) | !is.finite(pvals.forcov[l,2])){
           next;
         }
@@ -229,18 +237,28 @@ for (i in 1:length(q2)) {
           next;
         }
         pval = truncatedP(pvals.forcov[l,])
+        pval.naive = truncatedP(pvals[l,])
+        
         if (pval <= alpha){
           count = count + 1
         }
+        if (pval.naive <= alpha){
+          count.naive = count.naive + 1
+        }
+        
         total = total + 1
+        total.naive = total.naive + 1
       }
       cat(", total: ", total, "\n")
       power.exp.truncP[i, j, k] = round(count/total, 3)
+      power.exp.truncP.naive[i,j,k] = round(count.naive / total.naive, 3)
     }
   }
 }
 
 ```
+
+#### results with adjustment of correlation between p-values
 
 ```{r}
 exp.truncP.q2low = power.exp.truncP[1,,]
@@ -267,6 +285,32 @@ cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
 exp.seq.q2high - exp.truncP.q2high
 ```
 
+#### results without adjustment of correlation between p-values
+
+```{r}
+exp.truncP.naive.q2low = power.exp.truncP.naive[1,,]
+exp.truncP.naive.q2mid = power.exp.truncP.naive[2,,]
+exp.truncP.naive.q2high = power.exp.truncP.naive[3,,]
+
+cat("Survival Time Follows Expoential Distribution\n")
+
+cat("truncatedP simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+exp.truncP.naive.q2low
+cat("truncatedP simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+exp.truncP.naive.q2mid
+cat("truncatedP simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+exp.truncP.naive.q2high
+```
+```{r}
+cat("Difference, (sequential testing) - (truncatedP method)\n")
+
+cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+exp.seq.q2low - exp.truncP.naive.q2low
+cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+exp.seq.q2mid - exp.truncP.naive.q2mid
+cat("seq - truncP simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+exp.seq.q2high - exp.truncP.naive.q2high
+```
 
 
 ### (b) Survival time follows weibull distribution
