@@ -6,10 +6,6 @@ output: html_document
 ---
 
 ```{r include=F}
-#install.packages("nnls") #install before download lcmix
-#install.packages("lcmix", repos="http://R-Forge.R-project.org")
-#install.packages("flexsurv")
-#library(lcmix)
 library(combinat)
 library(flexsurv)
 library(sensitivitymv)
@@ -19,15 +15,15 @@ source("mvfunctions.R")
 
 ## (1) Specification
 
-* N: Number of simulations = 5000
+* N: Number of simulations = 5,000
 * n: Number of generated samples per group = 500
 * Group2 is treated group 
 * one-sided, alpha = 0.05, beta = 0.025
-* $\Delta_x = \frac{\mu_{x2} - \mu_{x1}}{\sqrt{2}\sigma_{x1}} \in \{0.0, 0.05, 0.1, 0.15, 0.20\}$ is the primary outcome of interest ($\mu_{x1} = 0$, $\sigma_{x1} = 1$)
-* $\begin{pmatrix} X_1 \\ X_2 \end{pmatrix} \sim N \begin{pmatrix} \begin{pmatrix} 0\\\sqrt{2} \Delta_x \end{pmatrix}, \begin{pmatrix} \sigma^2_{x1} & \rho_x\sigma_{x1}\sigma_{x2} \\ \rho_x\sigma_{x1}\sigma_{x2} & \sigma^2_{x2} \end{pmatrix} \end{pmatrix}$, $\rho_x=0.8$, $\sigma_{x1}=\sigma_{x2}=1$
+* $\Delta_y = \frac{\mu_{y2} - \mu_{y1}}{\sqrt{2}\sigma_{y1}} \in \{0.0, 0.05, 0.1, 0.15, 0.20\}$ is the primary outcome of interest ($\mu_{y1} = 0$, $\sigma_{y1} = 1$)
+* $\begin{pmatrix} Y_1 \\ Y_2 \end{pmatrix} \sim N \begin{pmatrix} \begin{pmatrix} 0\\\sqrt{2} \Delta_y \end{pmatrix}, \begin{pmatrix} \sigma^2_{y1} & \rho_y\sigma_{y1}\sigma_{y2} \\ \rho_y\sigma_{y1}\sigma_{y2} & \sigma^2_{y2} \end{pmatrix} \end{pmatrix}$, $\rho_y=0.8$, $\sigma_{y1}=\sigma_{y2}=1$
 * $p_i = E(\delta_{ij}) = \mathrm{Pr}(\delta_{ij}=1) = \mathrm{Pr}(t_{ij} \leq T)$ is the probability of truncated by death at observed time T for group i
 * $q_i = 1-p_i = \mathrm{Pr}(t_{ij} > T), \quad i = 1, 2$ is the probability of survival at observed time T
-* $q_2 \in \{0.6, 0.8, 0.9\}, \quad T = 3$
+* $q_2 \in \{0.6, 0.8, 0.9\}=\{low, mid, high\}, \quad T = 3$
 * $\text{HR (Hazard Ratio)} \in \{1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30  \}$
 
 ## (2) Power Simulation
@@ -45,7 +41,7 @@ time = 3
 N = 5000
 n = 500
 rho_t = 0.8
-rho_X = 0.8
+rho_Y = 0.8
 alpha = 0.05
 beta.2 = 0.025
 beta.1 = alpha / 4 * 1
@@ -78,7 +74,7 @@ simulate.exp.binom <- function(n, q2, HR, time, rho_t){
   }
 }
 
-simulate.exp.both <- function(n, q2, HR, Delta, time, rho_X, rho_t){
+simulate.exp.both <- function(n, q2, HR, Delta, time, rho_Y, rho_t){
   lambda2 = -1 / time * log(q2)
   lambda1 = lambda2 * HR
   #q1 = exp(-lambda1 * t)
@@ -88,25 +84,25 @@ simulate.exp.both <- function(n, q2, HR, Delta, time, rho_X, rho_t){
   t1 = t[,1]
   t2 = t[,2]
   
-  corr_X = matrix(c(1, rho_X, rho_X, 1), nrow = 2)
-  X = rmvnorm(n, mean = c(0, 2^0.5 * Delta), cov = corr_X)
-  X1 = X[,1]
-  X2 = X[,2]
+  corr_Y = matrix(c(1, rho_Y, rho_Y, 1), nrow = 2)
+  Y = rmvnorm(n, mean = c(0, 2^0.5 * Delta), cov = corr_Y)
+  Y1 = Y[,1]
+  Y2 = Y[,2]
   
-  eta = min(X) - 1 - time - 2 *(max(X)-min(X)) # in order to be worst
-  distmin = min(abs(X1-X2))/time/10 # less than minimum difference between X1 and X2 divided by time
+  eta = min(Y) - 1 - time - 2 *(max(Y)-min(Y)) # in order to be worst
+  distmin = min(abs(Y1-Y2))/time/10 # less than minimum difference between Y1 and Y2 divided by time
   
-  X1_tilde = X1 * (t1 >= time) + (eta + t1*distmin) * (t1 < time)
-  X2_tilde = X2 * (t2 >= time) + (eta + t2*distmin) * (t2 < time)
+  Y1_tilde = Y1 * (t1 >= time) + (eta + t1*distmin) * (t1 < time)
+  Y2_tilde = Y2 * (t2 >= time) + (eta + t2*distmin) * (t2 < time)
   
-  X1_survivorOnly = X1[t1 >= time & t2 >= time]
-  X2_survivorOnly = X2[t1 >= time & t2 >= time]
+  Y1_survivorOnly = Y1[t1 >= time & t2 >= time]
+  Y2_survivorOnly = Y2[t1 >= time & t2 >= time]
   
-  if (length(X1_survivorOnly) == 0) {
+  if (length(Y1_survivorOnly) == 0) {
     return (c(-1,-1,-1))
   }
   
-  pval.2 = wilcox.test(X1_tilde, X2_tilde, alternative="less", paired=T)$p.value
+  pval.2 = wilcox.test(Y1_tilde, Y2_tilde, alternative="less", paired=T)$p.value
   
   OnlyControlDead = sum(t1 < time & t2 >= time)
   OnlyTreatedDead = sum(t2 < time & t1 >= time)
@@ -120,7 +116,7 @@ simulate.exp.both <- function(n, q2, HR, Delta, time, rho_X, rho_t){
     if (pval.alt > alpha) { return (c(pval, pval.2)); }
     else {
       #cat("prob: ", (alpha - pval.alt)/(pval - pval.alt), "pval_alt: ", pval.alt, "\n");
-      return (c(1 - rbinom(1, 1, (alpha - pval.alt)/(pval - pval.alt)), pval.2)); # auxiliary random, 
+      return (c(1 - rbinom(1, 1, (alpha - pval.alt)/(pval - pval.alt)), pval.2)); # auxiliary random 
     }
   }
 }
@@ -151,7 +147,7 @@ for (i in 1:length(q2)) {
       count.3 = 0
       total = 0
       for (l in c(1:N)){
-        pvals = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
+        pvals = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_Y, rho_t)
         if (pvals[1] == -1) {
           print(l)
           next;
@@ -286,7 +282,7 @@ for (i in 1:length(q2)) {
       pvals = array(data = NA, dim = c(N, 2))
       pvals.forcov = array(data = NA, dim = c(N, 2))
       for (l in c(1:N)){
-        pvals[l,] = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
+        pvals[l,] = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_Y, rho_t)
       }
       r = cor(pvals)[1,2]
       cat("cor matrix: ", cor(pvals))
