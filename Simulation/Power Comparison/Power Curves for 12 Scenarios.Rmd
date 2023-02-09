@@ -1,0 +1,318 @@
+---
+title: "Power curves for 12 scenarios"
+author: "권대영, 민태원"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r include=F}
+library(combinat)
+library(flexsurv)
+library(sensitivitymv)
+library(gtools)
+library(ggplot2)
+source("mvfunctions.R")
+```
+
+## (1) Specification: Choose 12 scenarios (HR, Delta_y)
+
+* N: Number of simulations = 5,000
+* n: Number of generated samples per group = 500
+* Group2 is treated group 
+* one-sided, alpha = 0.05, beta = 0 ~ 0.05 (by 0.0005)
+* $\Delta_y = \frac{\mu_{y2} - \mu_{y1}}{\sqrt{2}\sigma_{y1}} \in \{0.0, 0.02, 0.04\}$ is the primary outcome of interest ($\mu_{y1} = 0$, $\sigma_{y1} = 1$)
+* $\begin{pmatrix} Y_1 \\ Y_2 \end{pmatrix} \sim N \begin{pmatrix} \begin{pmatrix} 0\\\sqrt{2} \Delta_y \end{pmatrix}, \begin{pmatrix} \sigma^2_{y1} & \rho_y\sigma_{y1}\sigma_{y2} \\ \rho_y\sigma_{y1}\sigma_{y2} & \sigma^2_{y2} \end{pmatrix} \end{pmatrix}$, $\rho_y=0.8$, $\sigma_{y1}=\sigma_{y2}=1$
+* $p_i = E(\delta_{ij}) = \mathrm{Pr}(\delta_{ij}=1) = \mathrm{Pr}(t_{ij} \leq T)$ is the probability of truncated by death at observed time T for group i
+* $q_i = 1-p_i = \mathrm{Pr}(t_{ij} > T), \quad i = 1, 2$ is the probability of survival at observed time T
+* $q_2 \in \{0.6, 0.8, 0.9\}=\{low, mid, high\}, \quad T = 3$
+* $\text{HR(Hazard Ratio)} \in \{1, 1.05, 1.1, 1.2\}$
+
+
+## (2) Power Simulation
+
+### (a) Survival time follows exponential distribution
+
+#### Power for sequential test
+
+```{r}
+#Define parameters 
+Delta = c(0.0, 0.02, 0.04)
+q2 = c(0.6, 0.8, 0.9)
+HR = c(1.0, 1.05, 1.1, 1.2)
+time = 3
+N = 5000
+n = 500
+rho_t = 0.8
+rho_Y = 0.8
+alpha = 0.05
+beta = seq(0, 0.05, by=5e-4)
+
+simulate.exp.both <- function(n, q2, HR, Delta, time, rho_Y, rho_t){
+  lambda2 = -1 / time * log(q2)
+  lambda1 = lambda2 * HR
+  #q1 = exp(-lambda1 * t)
+  
+  corr_t = matrix(c(1, rho_t, rho_t, 1), nrow = 2)
+  t = rmvexp(n, rate=c(lambda1, lambda2), corr=corr_t)
+  t1 = t[,1]
+  t2 = t[,2]
+  
+  corr_Y = matrix(c(1, rho_Y, rho_Y, 1), nrow = 2)
+  Y = rmvnorm(n, mean = c(0, 2^0.5 * Delta), cov = corr_Y)
+  Y1 = Y[,1]
+  Y2 = Y[,2]
+  
+  eta = min(Y) - 1 - time - 2 *(max(Y)-min(Y)) # in order to be worst
+  distmin = min(abs(Y1-Y2))/time/10 # less than minimum difference between Y1 and Y2 divided by time
+  
+  Y1_tilde = Y1 * (t1 >= time) + (eta + t1*distmin) * (t1 < time)
+  Y2_tilde = Y2 * (t2 >= time) + (eta + t2*distmin) * (t2 < time)
+  
+  Y1_survivorOnly = Y1[t1 >= time & t2 >= time]
+  Y2_survivorOnly = Y2[t1 >= time & t2 >= time]
+  
+  if (length(Y1_survivorOnly) == 0) {
+    return (c(-1,-1,-1))
+  }
+  
+  pval.2 = wilcox.test(Y1_tilde, Y2_tilde, alternative="less", paired=T)$p.value
+  
+  OnlyControlDead = sum(t1 < time & t2 >= time)
+  OnlyTreatedDead = sum(t2 < time & t1 >= time)
+  if (OnlyControlDead == 0 & OnlyTreatedDead == 0) return (c(-1,-1)); # no discordant pair
+  pval = binom.test(c(OnlyControlDead, OnlyTreatedDead), alternative = "greater")$p.value;
+  if (pval <= alpha) {return (c(pval, pval.2));}
+  else { 
+    if (OnlyTreatedDead == 0) {pval.alt = 0;}
+    else {pval.alt = binom.test(c(OnlyControlDead+1, OnlyTreatedDead-1), alternative = "greater")$p.value;}
+    
+    if (pval.alt > alpha) { return (c(pval, pval.2)); }
+    else {
+      return (c(1 - rbinom(1, 1, (alpha - pval.alt)/(pval - pval.alt)), pval.2)); # auxiliary random 
+    }
+  }
+}
+```
+
+
+```{r}
+power.exp.seq = array(data = NA, dim=c(length(q2), length(Delta), length(HR), length(beta)), dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), c(0.0, 0.02, 0.04), c(1.0, 1.05, 1.1, 1.2), seq(0, 0.05, by=5e-4)))
+
+set.seed(123)
+for (i in 1:length(q2)) {
+  cat("q2: ", q2[i], "\n")
+  for (j in 1:length(Delta)) {
+    cat("Delta: ", Delta[j], "\n")
+    for (k in 1:length(HR)) {
+      cat("HR: ", HR[k], "\n")
+      count = array(0, length(beta))
+      total = 0
+      for (l in c(1:N)) {
+        pvals = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_Y, rho_t)
+        if (pvals[1] == -1 || pvals[2] == -1) {
+          cat("every pairs died at ", l, "-th simluation")
+          next;
+        }
+        total = total + 1
+        for (b in 1:length(beta)) {
+          if (pvals[1] <= beta[b]) {count[b] = count[b] + 1}
+          else if (pvals[2] <= (alpha - beta[b])) {count[b] = count[b] + 1}
+        }
+      }
+      power.exp.seq[i,j,k,] = count/total
+    }
+  }
+}
+```
+
+#### plot
+
+```{r}
+exp.seq.q2low = power.exp.seq[1,,,]
+exp.seq.q2mid = power.exp.seq[2,,,]
+exp.seq.q2high = power.exp.seq[3,,,]
+```
+
+##### (1) q2 = low (60%)
+
+```{r}
+power_delta0_hr1.0 = exp.seq.q2low[1,1,] # Delta = 0, HR = 1
+power_delta0_hr1.05 = exp.seq.q2low[1,2,] # Delta = 0, HR = 1.05
+power_delta0_hr1.1 = exp.seq.q2low[1,3,] # Delta = 0, HR = 1.1
+power_delta0_hr1.2 = exp.seq.q2low[1,4,] # Delta = 0, HR = 1.2
+
+power_delta0.02_hr1.0 = exp.seq.q2low[2,1,] # Delta = 0.02, HR = 1
+power_delta0.02_hr1.05 = exp.seq.q2low[2,2,] # Delta = 0.02, HR = 1.05
+power_delta0.02_hr1.1 = exp.seq.q2low[2,3,] # Delta = 0.02, HR = 1.1
+power_delta0.02_hr1.2 = exp.seq.q2low[2,4,] # Delta = 0.02, HR = 1.2
+
+power_delta0.04_hr1.0 = exp.seq.q2low[3,1,] # Delta = 0.04, HR = 1
+power_delta0.04_hr1.05 = exp.seq.q2low[3,2,] # Delta = 0.04, HR = 1.05
+power_delta0.04_hr1.1 = exp.seq.q2low[3,3,] # Delta = 0.04, HR = 1.1
+power_delta0.04_hr1.2 = exp.seq.q2low[3,4,] # Delta = 0.04, HR = 1.2
+
+df = data.frame(beta = rep(beta, 12), 
+group = rep(c("delta0_hr1.0","delta0_hr1.05","delta0_hr1.1","delta0_hr1.2",
+              "delta0.02_hr1.0","delta0.02_hr1.05","delta0.02_hr1.1","delta0.02_hr1.2",
+              "delta0.04_hr1.0","delta0.04_hr1.05","delta0.04_hr1.1","delta0.04_hr1.2"), each=length(beta)), power = 
+c(power_delta0_hr1.0, power_delta0_hr1.05, power_delta0_hr1.1, power_delta0_hr1.2,
+  power_delta0.02_hr1.0,power_delta0.02_hr1.05,power_delta0.02_hr1.1,power_delta0.02_hr1.2,
+  power_delta0.04_hr1.0,power_delta0.04_hr1.05,power_delta0.04_hr1.1,power_delta0.04_hr1.2))
+
+df$beta[which(df$power[df$group=="delta0_hr1.0"] ==
+                max(df$power[df$group=="delta0_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.05"] ==
+                max(df$power[df$group=="delta0_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.1"] ==
+                max(df$power[df$group=="delta0_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.2"] ==
+                max(df$power[df$group=="delta0_hr1.2"]))]
+
+df$beta[which(df$power[df$group=="delta0.02_hr1.0"] ==
+                max(df$power[df$group=="delta0.02_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.05"] ==
+                max(df$power[df$group=="delta0.02_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.1"] ==
+                max(df$power[df$group=="delta0.02_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.2"] ==
+                max(df$power[df$group=="delta0.02_hr1.2"]))]
+
+df$beta[which(df$power[df$group=="delta0.04_hr1.0"] ==
+                max(df$power[df$group=="delta0.04_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.05"] ==
+                max(df$power[df$group=="delta0.04_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.1"] ==
+                max(df$power[df$group=="delta0.04_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.2"] ==
+                max(df$power[df$group=="delta0.04_hr1.2"]))]
+```
+
+
+```{r}
+ggplot(df, aes(beta, power, col=group)) +
+  geom_line(size=1)
+```
+
+
+
+##### (2) q2 = mid (80%)
+
+```{r}
+power_delta0_hr1.0 = exp.seq.q2mid[1,1,] # Delta = 0, HR = 1
+power_delta0_hr1.05 = exp.seq.q2mid[1,2,] # Delta = 0, HR = 1.05
+power_delta0_hr1.1 = exp.seq.q2mid[1,3,] # Delta = 0, HR = 1.1
+power_delta0_hr1.2 = exp.seq.q2mid[1,4,] # Delta = 0, HR = 1.2
+
+power_delta0.02_hr1.0 = exp.seq.q2mid[2,1,] # Delta = 0.02, HR = 1
+power_delta0.02_hr1.05 = exp.seq.q2mid[2,2,] # Delta = 0.02, HR = 1.05
+power_delta0.02_hr1.1 = exp.seq.q2mid[2,3,] # Delta = 0.02, HR = 1.1
+power_delta0.02_hr1.2 = exp.seq.q2mid[2,4,] # Delta = 0.02, HR = 1.2
+
+power_delta0.04_hr1.0 = exp.seq.q2mid[3,1,] # Delta = 0.04, HR = 1
+power_delta0.04_hr1.05 = exp.seq.q2mid[3,2,] # Delta = 0.04, HR = 1.05
+power_delta0.04_hr1.1 = exp.seq.q2mid[3,3,] # Delta = 0.04, HR = 1.1
+power_delta0.04_hr1.2 = exp.seq.q2mid[3,4,] # Delta = 0.04, HR = 1.2
+
+df = data.frame(beta = rep(beta, 12), 
+group = rep(c("delta0_hr1.0","delta0_hr1.05","delta0_hr1.1","delta0_hr1.2",
+              "delta0.02_hr1.0","delta0.02_hr1.05","delta0.02_hr1.1","delta0.02_hr1.2",
+              "delta0.04_hr1.0","delta0.04_hr1.05","delta0.04_hr1.1","delta0.04_hr1.2"), each=length(beta)), power = 
+c(power_delta0_hr1.0, power_delta0_hr1.05, power_delta0_hr1.1, power_delta0_hr1.2,
+  power_delta0.02_hr1.0,power_delta0.02_hr1.05,power_delta0.02_hr1.1,power_delta0.02_hr1.2,
+  power_delta0.04_hr1.0,power_delta0.04_hr1.05,power_delta0.04_hr1.1,power_delta0.04_hr1.2))
+
+df$beta[which(df$power[df$group=="delta0_hr1.0"] ==
+                max(df$power[df$group=="delta0_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.05"] ==
+                max(df$power[df$group=="delta0_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.1"] ==
+                max(df$power[df$group=="delta0_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.2"] ==
+                max(df$power[df$group=="delta0_hr1.2"]))]
+
+df$beta[which(df$power[df$group=="delta0.02_hr1.0"] ==
+                max(df$power[df$group=="delta0.02_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.05"] ==
+                max(df$power[df$group=="delta0.02_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.1"] ==
+                max(df$power[df$group=="delta0.02_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.2"] ==
+                max(df$power[df$group=="delta0.02_hr1.2"]))]
+
+df$beta[which(df$power[df$group=="delta0.04_hr1.0"] ==
+                max(df$power[df$group=="delta0.04_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.05"] ==
+                max(df$power[df$group=="delta0.04_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.1"] ==
+                max(df$power[df$group=="delta0.04_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.2"] ==
+                max(df$power[df$group=="delta0.04_hr1.2"]))]
+```
+
+
+```{r}
+ggplot(df, aes(beta, power, col=group)) +
+  geom_line(size=1)
+```
+
+
+
+##### (3) q2 = high (90%)
+
+```{r}
+power_delta0_hr1.0 = exp.seq.q2high[1,1,] # Delta = 0, HR = 1
+power_delta0_hr1.05 = exp.seq.q2high[1,2,] # Delta = 0, HR = 1.05
+power_delta0_hr1.1 = exp.seq.q2high[1,3,] # Delta = 0, HR = 1.1
+power_delta0_hr1.2 = exp.seq.q2high[1,4,] # Delta = 0, HR = 1.2
+
+power_delta0.02_hr1.0 = exp.seq.q2high[2,1,] # Delta = 0.02, HR = 1
+power_delta0.02_hr1.05 = exp.seq.q2high[2,2,] # Delta = 0.02, HR = 1.05
+power_delta0.02_hr1.1 = exp.seq.q2high[2,3,] # Delta = 0.02, HR = 1.1
+power_delta0.02_hr1.2 = exp.seq.q2high[2,4,] # Delta = 0.02, HR = 1.2
+
+power_delta0.04_hr1.0 = exp.seq.q2high[3,1,] # Delta = 0.04, HR = 1
+power_delta0.04_hr1.05 = exp.seq.q2high[3,2,] # Delta = 0.04, HR = 1.05
+power_delta0.04_hr1.1 = exp.seq.q2high[3,3,] # Delta = 0.04, HR = 1.1
+power_delta0.04_hr1.2 = exp.seq.q2high[3,4,] # Delta = 0.04, HR = 1.2
+
+df = data.frame(beta = rep(beta, 12), 
+group = rep(c("delta0_hr1.0","delta0_hr1.05","delta0_hr1.1","delta0_hr1.2",
+              "delta0.02_hr1.0","delta0.02_hr1.05","delta0.02_hr1.1","delta0.02_hr1.2",
+              "delta0.04_hr1.0","delta0.04_hr1.05","delta0.04_hr1.1","delta0.04_hr1.2"), each=length(beta)), power = 
+c(power_delta0_hr1.0, power_delta0_hr1.05, power_delta0_hr1.1, power_delta0_hr1.2,
+  power_delta0.02_hr1.0,power_delta0.02_hr1.05,power_delta0.02_hr1.1,power_delta0.02_hr1.2,
+  power_delta0.04_hr1.0,power_delta0.04_hr1.05,power_delta0.04_hr1.1,power_delta0.04_hr1.2))
+
+df$beta[which(df$power[df$group=="delta0_hr1.0"] ==
+                max(df$power[df$group=="delta0_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.05"] ==
+                max(df$power[df$group=="delta0_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.1"] ==
+                max(df$power[df$group=="delta0_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0_hr1.2"] ==
+                max(df$power[df$group=="delta0_hr1.2"]))]
+
+df$beta[which(df$power[df$group=="delta0.02_hr1.0"] ==
+                max(df$power[df$group=="delta0.02_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.05"] ==
+                max(df$power[df$group=="delta0.02_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.1"] ==
+                max(df$power[df$group=="delta0.02_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0.02_hr1.2"] ==
+                max(df$power[df$group=="delta0.02_hr1.2"]))]
+
+df$beta[which(df$power[df$group=="delta0.04_hr1.0"] ==
+                max(df$power[df$group=="delta0.04_hr1.0"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.05"] ==
+                max(df$power[df$group=="delta0.04_hr1.05"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.1"] ==
+                max(df$power[df$group=="delta0.04_hr1.1"]))]
+df$beta[which(df$power[df$group=="delta0.04_hr1.2"] ==
+                max(df$power[df$group=="delta0.04_hr1.2"]))]
+```
+
+
+```{r}
+ggplot(df, aes(beta, power, col=group)) +
+  geom_line(size=1)
+```
