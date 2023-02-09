@@ -1,0 +1,138 @@
+---
+title: "compare_wsr_survivor_exp_grid"
+author: "민태원, 권대영"
+date: "2023-02-09"
+output: html_document
+---
+
+#### load `lcmix` package which includes `rmvnorm` and `rmvexp`.
+
+* simulate_exp generates 3 p-values at once: worst-rank wsr, worst-rank wmw, survivors only wsr
+
+```{r include=F}
+#install.packages("nnls") #install before download lcmix
+#install.packages("lcmix", repos="http://R-Forge.R-project.org")
+#install.packages("flexsurv")
+#library(lcmix)
+library(combinat)
+library(flexsurv)
+library(gtools)
+source("C:/Users/MIN/OneDrive - SNU/문서/GitHub/Matching_WorstRank/Simulation/mvfunctions.R")
+```
+
+#### gridlike comparison of worst-rank and survivor only
+
+* survival time follows mvnexp
+* $q_2 \in \{0.6, 0.8, 0.9\}, \quad T = 3$
+* $\text{HR (Hazard Ratio)} \in \{1.00, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07, 1.08, 1.09, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.20\}$
+* $\Delta_x = \frac{\mu_{x2} - \mu_{x1}}{\sqrt{2}\sigma_{x1}} \in \{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6\}$
+
+```{r}
+#Define parameters 
+Delta = c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+q2 = c(0.6, 0.8, 0.9)
+HR = c(1.00, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07, 1.08, 1.09, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.20)
+time = 3
+N = 5000
+n = 50
+rho_X = 0.8
+rho_t = 0.8
+alpha = 0.05
+
+power.exp.grid = array(data = NA, dim = c(2, length(q2), length(Delta), length(HR)), 
+                  dimnames = list(c("Paired Worst rank", "Survivors-only"),
+                                  c("q2=60%", "q2=80%", "q2=90%"), 
+                                  c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), 
+                                  c(1.00, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07, 1.08, 1.09, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.20)))
+```
+
+#### Simulate
+
+```{r, include = F, echo = F}
+set.seed(123)
+for (i in 1:length(q2)) {
+  
+  for (j in 1:length(Delta)) {
+    
+    for (k in 1:length(HR)) {
+      cat("q2 value: ",q2[i], ", ")
+      cat("Delta value: ",Delta[j], ", ")
+      cat("HR value: ",HR[k], "\n")
+      count_wsr=0
+      count_wmw=0
+      count_survivor = 0
+      total = 0
+      for (l in c(1:N)){
+        wsr_tests = simulate_exp(n, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
+        wsr_p = wsr_tests[1]
+        wsr_survivor_p = wsr_tests[3]
+        if (wsr_p == -1) break;
+        if (wsr_p <= 0.05){
+          count_wsr = count_wsr + 1
+        }
+        if (wsr_survivor_p <= 0.05){
+          count_survivor = count_survivor + 1
+        }
+        total = total + 1
+      }
+      power.exp.grid[1, i, j, k] = round(count_wsr/total, 3)
+      power.exp.grid[2, i, j, k] = round(count_survivor/total, 3)
+    }
+  }
+}
+```
+
+
+#### Show Results
+
+```{r, echo = F}
+wsr_q2low_grid = power.exp.grid[1,1,,]
+wsr_q2mid_grid = power.exp.grid[1,2,,]
+wsr_q2high_grid = power.exp.grid[1,3,,]
+
+survivoronly_q2low_grid = power.exp.grid[2,1,,]
+survivoronly_q2mid_grid = power.exp.grid[2,2,,]
+survivoronly_q2high_grid = power.exp.grid[2,3,,]
+
+diffwsrsurvivor_q2low_grid = wsr_q2low_grid - survivoronly_q2low_grid
+diffwsrsurvivor_q2mid_grid = wsr_q2mid_grid - survivoronly_q2mid_grid
+diffwsrsurvivor_q2high_grid = wsr_q2high_grid - survivoronly_q2high_grid
+
+cat("Wilcoxon signed worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+wsr_q2low_grid
+cat("\nWilcoxon signed worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+wsr_q2mid_grid
+cat("\nWilcoxon signed worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+wsr_q2high_grid
+
+cat("\nsurvivors only simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+survivoronly_q2low_grid
+cat("\nsurvivors only simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+survivoronly_q2mid_grid
+cat("\nsurvivors only simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+survivoronly_q2high_grid
+
+cat("\ndifference between WSR and survivor only, q2 = 0.6\n")
+diffwsrsurvivor_q2low_grid
+cat("\ndifference between WSR and survivor only, q2 = 0.8\n")
+diffwsrsurvivor_q2mid_grid
+cat("\ndifference between WSR and survivor only, q2 = 0.9\n")
+diffwsrsurvivor_q2high_grid
+```
+
+#### save results
+
+```{r, include = F, echo = F}
+write.csv(wsr_q2low_grid,"tables/wsr_q2low_grid.csv")
+write.csv(wsr_q2mid_grid,"tables/wsr_q2mid_grid.csv")
+write.csv(wsr_q2high_grid,"tables/wsr_q2high_grid.csv")
+
+write.csv(survivoronly_q2low_grid,"tables/survivoronly_q2low_grid.csv")
+write.csv(survivoronly_q2mid_grid,"tables/survivoronly_q2mid_grid.csv")
+write.csv(survivoronly_q2high_grid,"tables/survivoronly_q2high_grid.csv")
+
+write.csv(diffwsrsurvivor_q2low_grid,"tables/diffwsrsur_q2low_grid.csv")
+write.csv(diffwsrsurvivor_q2mid_grid,"tables/diffwsrsur_q2mid_grid.csv")
+write.csv(diffwsrsurvivor_q2high_grid,"tables/diffwsrsur_q2high_grid.csv")
+```
+

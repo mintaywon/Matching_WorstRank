@@ -1,3 +1,71 @@
+# simulate_exp generates p-values for 3 methods at once: worst-rank wsr, worst-rank wmw, survivors only wsr
+simulate_exp <- function(n, q2, HR, Delta, time, rho_X, rho_t){
+  lambda2 = -1 / time * log(q2)
+  lambda1 = lambda2 * HR
+  #q1 = exp(-lambda1 * t)
+  
+  corr_t = matrix(c(1, rho_t, rho_t, 1), nrow = 2)
+  t = rmvexp(n, rate=c(lambda1, lambda2), corr=corr_t)
+  t1 = t[,1]
+  t2 = t[,2]
+  
+  corr_X = matrix(c(1, rho_X, rho_X, 1), nrow = 2)
+  X = rmvnorm(n, mean = c(0, 2^0.5 * Delta), cov = corr_X)
+  X1 = X[,1]
+  X2 = X[,2]
+  
+  eta = min(X) - 1 - time - 2 *(max(X)-min(X)) # in order to be worst
+  distmin = min(abs(X1-X2))/time/10 # less than minimum difference between X1 and X2 divided by time
+  
+  X1_tilde = X1 * (t1 >= time) + (eta + t1*distmin) * (t1 < time)
+  X2_tilde = X2 * (t2 >= time) + (eta + t2*distmin) * (t2 < time)
+  
+  X1_survivorOnly = X1[t1 >= time & t2 >= time]
+  X2_survivorOnly = X2[t1 >= time & t2 >= time]
+  
+  if (length(X1_survivorOnly) == 0) {
+    return (c(-1,-1,-1))
+  }
+  return (c(wilcox.test(X1_tilde, X2_tilde, alternative="less", paired=T)$p.value,
+            wilcox.test(X1_tilde, X2_tilde, alternative="less", paired=F)$p.value,
+            wilcox.test(X1_survivorOnly, X2_survivorOnly, alternative="less", paired=T)$p.value))
+}
+
+#simulate_probs_exp simulates probabilities for computing theoretical power(i.e., p1, p2, p3, p4 of Hetmmansperger(1984))
+simulate_probs_exp <- function(n, q2, HR, Delta, time, rho_X, rho_t){
+  lambda2 = -1 / time * log(q2)
+  lambda1 = lambda2 * HR
+  #q1 = exp(-lambda1 * t)
+  
+  corr_t = matrix(c(1, rho_t, rho_t, 1), nrow = 2)
+  t = rmvexp(n, rate=c(lambda1, lambda2), corr=corr_t)
+  t1 = t[,1]
+  t2 = t[,2]
+  
+  corr_X = matrix(c(1, rho_X, rho_X, 1), nrow = 2)
+  X = rmvnorm(n, mean = c(0, 2^0.5 * Delta), cov = corr_X)
+  X1 = X[,1]
+  X2 = X[,2]
+  
+  eta = min(X) - 1 - time - 2 *(max(X)-min(X)) # in order to be worst
+  distmin = min(abs(X1-X2))/time/10 # less than minimum difference between X1 and X2 divided by time
+  
+  X1_tilde = X1 * (t1 >= time) + (eta + t1*distmin) * (t1 < time)
+  X2_tilde = X2 * (t2 >= time) + (eta + t2*distmin) * (t2 < time)
+  
+  Y_tilde = X1_tilde - X2_tilde
+  Y_tilde2 = permute(Y_tilde)
+  Y_tilde3 = permute(Y_tilde)
+  
+  p1 = mean(Y_tilde > 0)
+  p2 = mean((Y_tilde + Y_tilde2) > 0)
+  p3 = mean(Y_tilde > 0 & ((Y_tilde + Y_tilde2) > 0)) # p3 = (p1 ** 2 + p2) / 2
+  p4 = mean(((Y_tilde + Y_tilde2) > 0) * ((Y_tilde + Y_tilde3) > 0))
+  return (c(p1,p2,p3,p4))
+}
+
+
+
 rmvnorm <- function(n, mean=NULL, cov=NULL) 
 {
   ## munge parameters PRN and deal with the simplest univariate case
