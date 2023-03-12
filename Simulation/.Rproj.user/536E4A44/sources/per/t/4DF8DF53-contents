@@ -1,0 +1,257 @@
+---
+title: "WSR_power_analysis_exp"
+author: "민태원, 권대영"
+date: "`r Sys.Date()`"
+output: html_document
+---
+  
+#### load `lcmix` package which includes `rmvnorm` and `rmvexp`.
+
+* simulate_exp generates 3 p-values at once: worst-rank wsr, worst-rank wmw, survivors only wsr
+  
+```{r, include=F}
+library(combinat)
+library(flexsurv)
+library(gtools)
+source(paste(dirname(getwd()), "/mvfunctions.R", sep = ""))
+```
+
+
+## (1) Specification
+
+* Number of simulations = 5000
+* one-sided, alpha = 0.05
+* $\Delta_x = \frac{\mu_{x2} - \mu_{x1}}{\sqrt{2}\sigma_{x1}} \in \{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6\}$ is the primary outcome of interest ($\mu_{x1} = 0$, $\sigma_{x1} = 1$)
+* $\begin{pmatrix} X_1 \\ X_2 \end{pmatrix} \sim N \begin{pmatrix} \begin{pmatrix} 0\\\sqrt{2} \Delta_x \end{pmatrix}, \begin{pmatrix} \sigma^2_{x1} & \rho_x\sigma_{x1}\sigma_{x2} \\ \rho_x\sigma_{x1}\sigma_{x2} & \sigma^2_{x2} \end{pmatrix} \end{pmatrix}$, $\rho_x=0.8$, $\sigma_{x1}=\sigma_{x2}=1$
+  * $p_i = E(\delta_{ij}) = \mathrm{Pr}(\delta_{ij}=1) = \mathrm{Pr}(t_{ij} \leq T)$ is the probability of truncated by death at observed time T for group i
+* $q_i = 1-p_i = \mathrm{Pr}(t_{ij} > T), \quad i = 1, 2$ is the probability of survival at observed time T
+* $q_2 \in \{0.6, 0.8, 0.9\}, \quad T = 3$
+* $\text{HR (Hazard Ratio)} \in \{1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0\}$
+  
+  
+  
+  
+## (2) Power computation by Simulation
+
+### (a) death follows exponential distribution
+
+* $\begin{pmatrix} t_1 \\ t_2 \end{pmatrix} \sim Exp\left( \begin{pmatrix} \lambda_{1}\\ \lambda_{2} \end{pmatrix}, \rho_t \right), \quad \rho_t = 0.8$ 
+* marginal pdf $f(t; \lambda) = \lambda e^{-\lambda t} ,\quad t \ge 0$
+* $q_i = exp(-\lambda_i T), \quad i=1,2, \quad T=3, \quad q_2 \in \{0.6, 0.8, 0.9\}$
+* $h_{i}(t) = \lambda_i$
+* $\text{HR} = h_{1}(t)/h_{2}(t) = \lambda_1 / \lambda_2$
+
+#### define parameters
+  
+```{r}
+#Define parameters 
+Delta = c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+q2 = c(0.6, 0.8, 0.9)
+HR = c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)
+time = 3
+N = 5000
+n = 50
+rho_X = 0.8
+rho_t = 0.8
+alpha = 0.05
+
+power.exp = array(data = NA, dim = c(3, length(q2), length(Delta), length(HR)), 
+                  dimnames = list(c("Paired Worst rank", "Non-paired Worst rank", "Survivors-only"),
+                                  c("q2=60%", "q2=80%", "q2=90%"), 
+                                  c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), 
+                                  c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)))
+```
+
+#### Simulate(N = 5000, n = 50)
+
+```{r, include = F, echo = F}
+set.seed(123)
+for (i in 1:length(q2)) {
+  for (j in 1:length(Delta)) {
+    for (k in 1:length(HR)) {
+      cat("q2 value: ",q2[i], ", ")
+      cat("Delta value: ",Delta[j], ", ")
+      cat("HR value: ",HR[k], "\n")
+      count_wsr=0
+      count_wmw=0
+      count_survivor = 0
+      total = 0
+      for (l in c(1:N)){
+        wsr_tests = simulate_exp(n, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
+        wsr_p = wsr_tests[1]
+        wmw_p = wsr_tests[2]
+        wsr_survivor_p = wsr_tests[3]
+        if (wsr_p == -1) break;
+        if (wsr_p <= 0.05){
+          count_wsr = count_wsr + 1
+        }
+        if (wmw_p <= 0.05){
+          count_wmw = count_wmw +1
+        }
+        if (wsr_survivor_p <= 0.05){
+          count_survivor = count_survivor + 1
+        }
+        total = total + 1
+      }
+      power.exp[1, i, j, k] = round(count_wsr/total, 3)
+      power.exp[2, i, j, k] = round(count_wmw/total, 3)
+      power.exp[3, i, j, k] = round(count_survivor/total, 3)
+    }
+  }
+}
+```
+
+#### Result
+
+```{r}
+wsr_q2low = power.exp[1,1,,]
+wsr_q2mid = power.exp[1,2,,]
+wsr_q2high = power.exp[1,3,,]
+
+wmw_q2low = power.exp[2,1,,]
+wmw_q2mid = power.exp[2,2,,]
+wmw_q2high = power.exp[2,3,,]
+
+survivoronly_q2low = power.exp[3,1,,]
+survivoronly_q2mid = power.exp[3,2,,]
+survivoronly_q2high = power.exp[3,3,,]
+
+diffwsrsur_q2low = wsr_q2low - survivoronly_q2low
+diffwsrsur_q2mid = wsr_q2mid - survivoronly_q2mid
+diffwsrsur_q2high = wsr_q2high - survivoronly_q2high
+
+cat("Wilcoxon signed worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+wsr_q2low
+cat("\nWilcoxon signed worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+wsr_q2mid
+cat("\nWilcoxon signed worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+wsr_q2high
+cat("\nWilcoxon-Mann-Whitney worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+wmw_q2low
+cat("\nWilcoxon-Mann-Whitney worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+wmw_q2mid
+cat("\nWilcoxon-Mann-Whitney worst-rank simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+wmw_q2high
+cat("\nsurvivors only simulation power, rows are Delta, cols are HR, q2 = 0.6\n")
+survivoronly_q2low
+cat("\nsurvivors only simulation power, rows are Delta, cols are HR, q2 = 0.8\n")
+survivoronly_q2mid
+cat("\nsurvivors only simulation power, rows are Delta, cols are HR, q2 = 0.9\n")
+survivoronly_q2high
+
+cat("\ndifference between WSR and survivor only, q2 = 0.6\n")
+diffwsrsur_q2low
+cat("\ndifference between WSR and survivor only, q2 = 0.8\n")
+diffwsrsur_q2mid
+cat("\ndifference between WSR and survivor only, q2 = 0.9\n")
+diffwsrsur_q2high
+```
+
+
+### 이론적 Power 계산
+
+* $\mu = Np_1 + {N(N-1) \over 2}p_2$,
+* $\sigma^2 = Np_1(1-p_1) + {N(N-1) \over 2}p_2(1-p_2) + 2N(N-1)(p_3 - p_1p_2) + N(N-1)(N-2)(p_4 - p_2^2)$
+  
+* $p_1 = P(\tilde{Y_1} > 0)$
+* $p_2 = P(\tilde{Y_1} + \tilde{Y_2} >0)$
+* $p_3 = P(\tilde{Y_1} + \tilde{Y_2} >0, \tilde{Y_1} >0)$ 
+* $p_4 = P(\tilde{Y_1} + \tilde{Y_2} >0, \tilde{Y_1} + \tilde{Y_3} >0)$
+  
+* power : $P(W < \mu_0 - \sigma_0 z_\alpha) \simeq \Phi({\mu_0 - \mu - z_\alpha\sigma_0 \over \sigma})$
+  
+* same setting as before
+  
+```{r}
+
+Delta = c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+q2 = c(0.6, 0.8, 0.9)
+HR = c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)
+time = 3
+N = 5000
+n = 50
+rho_X = 0.8
+rho_t = 0.8
+alpha = 0.05
+
+power.theory.array = array(data = NA, dim = c(length(q2), length(Delta), length(HR)), 
+                           dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), 
+                                           c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), 
+                                           c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)))
+
+n_prob = 1000000
+z_alpha = qnorm(1 - alpha)
+mu_0 = n * (n+1) / 4
+sigma_squared_0 = n * (n+1) * (2*n+1) / 24
+```
+  
+  
+```{r, include = F, echo = F}
+for (i in 1:length(q2)) {
+  for (j in 1:length(Delta)) {
+    for (k in 1:length(HR)) {
+      cat("q2[i] : ", q2[i], ", ")
+      cat("Delta[j] : ", Delta[j], ", ")
+      cat("HR: ", HR[k], "\n")
+      probs = simulate_probs_exp(n_prob, q2[i], HR[k], Delta[j], time, rho_X, rho_t)
+      mu = n * probs[1] + n * (n-1) / 2 * probs[2]
+      sigma_squared = n * probs[1] * (1-probs[1]) + n * (n-1) / 2 * probs[2] * (1-probs[2]) + 2 * n * (n-1) * (probs[3] - probs[1] * probs[2]) + n * (n-1) * (n-2) * (probs[4] - probs[2]^2)
+      power_theory = pnorm((-z_alpha * sqrt(sigma_squared_0)+ mu_0 - mu) / sqrt(sigma_squared))
+      
+      power.theory.array[i, j, k] = power_theory
+    }
+  }
+}
+```
+
+
+```{r}
+wsr_q2low_theory = power.theory.array[1,,]
+wsr_q2mid_theory = power.theory.array[2,,]
+wsr_q2high_theory = power.theory.array[3,,]
+
+difftheory_q2low = wsr_q2low - wsr_q2low_theory
+difftheory_q2mid = wsr_q2mid - wsr_q2mid_theory
+difftheory_q2high = wsr_q2high - wsr_q2high_theory
+
+#### comparison between simulation and theory power of wilcoxon signed worst-rank
+
+cat("Wilcoxon signed worst-rank simulation power - theory power, rows are Delta, cols are HR, q2 = 0.6\n")
+difftheory_q2low
+cat("Wilcoxon signed worst-rank simulation power - theory power, rows are Delta, cols are HR, q2 = 0.8\n")
+difftheory_q2mid
+cat("Wilcoxon signed worst-rank simulation power - theory power, rows are Delta, cols are HR, q2 = 0.9\n")
+difftheory_q2high
+```
+
+#### save to csv
+
+```{r, include = F, echo = F}
+write.csv(wsr_q2low, "tables/wsr_q2low.csv")
+write.csv(wsr_q2mid, "tables/wsr_q2mid.csv")
+write.csv(wsr_q2high, "tables/wsr_q2high.csv")
+
+write.csv(wmw_q2low, "tables/wmw_q2low.csv")
+write.csv(wmw_q2mid, "tables/wmw_q2mid.csv")
+write.csv(wmw_q2high, "tables/wmw_q2high.csv")
+
+write.csv(survivoronly_q2low, "tables/survivoronly_q2low.csv")
+write.csv(survivoronly_q2mid, "tables/survivoronly_q2mid.csv")
+write.csv(survivoronly_q2high, "tables/survivoronly_q2high.csv")
+
+write.csv(diffwsrsur_q2low, "tables/diffwsrsur_q2low.csv")
+write.csv(diffwsrsur_q2mid, "tables/diffwsrsur_q2mid.csv")
+write.csv(diffwsrsur_q2high, "tables/diffwsrsur_q2high.csv")
+
+write.csv(difftheory_q2low, "tables/difftheory_q2low.csv")
+write.csv(difftheory_q2mid, "tables/difftheory_q2mid.csv")
+write.csv(difftheory_q2high, "tables/difftheory_q2high.csv")
+
+write.csv(wsr_q2low_theory, "tables/theory_q2low.csv")
+write.csv(wsr_q2mid_theory, "tables/theory_q2mid.csv")
+write.csv(wsr_q2high_theory, "tables/theory_q2high.csv")
+```
+
+
+
+

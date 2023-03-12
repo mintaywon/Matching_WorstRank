@@ -1,0 +1,21 @@
+"0","library(combinat)"
+"2","
+다음의 패키지를 부착합니다: ‘combinat’
+
+"
+"2","The following object is masked from ‘package:utils’:
+
+    combn
+
+"
+"0","library(flexsurv)"
+"2","경고: 패키지 ‘flexsurv’는 R 버전 4.2.2에서 작성되었습니다"
+"2","필요한 패키지를 로딩중입니다: survival
+"
+"2","Registered S3 method overwritten by 'data.table':
+  method           from
+  print.data.table     
+"
+"0","library(sensitivitymv)"
+"0","library(gtools)"
+"0","source(paste(dirname(getwd()), ""/mvfunctions.R"", sep = """"))"

@@ -1,0 +1,26 @@
+{
+    "id": "719440CF",
+    "path": "~/GitHub/Matching_WorstRank/Simulation/Power Analysis/compare_wsr_survivor_exp_grid.Rmd",
+    "project_path": "Power Analysis/compare_wsr_survivor_exp_grid.Rmd",
+    "type": "r_markdown",
+    "hash": "3534865860",
+    "contents": "",
+    "dirty": false,
+    "created": 1677414521533.0,
+    "source_on_save": false,
+    "relative_order": 3,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "119,0",
+        "scrollLine": "91"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1677549559,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1677549559043,
+    "read_only": false,
+    "read_only_alternatives": []
+}

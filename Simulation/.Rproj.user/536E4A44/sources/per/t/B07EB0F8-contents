@@ -1,0 +1,255 @@
+---
+title: "Power Comparison for Sequential T1T2T3"
+author: "민태원, 권대영"
+date: "2023-02-07"
+output: html_document
+---
+
+
+```{r include=F}
+library(combinat)
+library(flexsurv)
+library(sensitivitymv)
+library(gtools)
+source(paste(dirname(getwd()), "/mvfunctions.R", sep = ""))
+```
+
+## (1) Specification
+
+* N: Number of simulations = 5,000
+* n: Number of generated samples per group = 50
+* Group2 is treated group 
+* one-sided, alpha = 0.05, beta = 0.025
+* $\Delta_y = \frac{\mu_{y2} - \mu_{y1}}{\sqrt{2}\sigma_{y1}} \in \{0.0, 0.05, 0.1, 0.15, 0.20\}$ is the primary outcome of interest ($\mu_{y1} = 0$, $\sigma_{y1} = 1$)
+* $\begin{pmatrix} Y_1 \\ Y_2 \end{pmatrix} \sim N \begin{pmatrix} \begin{pmatrix} 0\\\sqrt{2} \Delta_y \end{pmatrix}, \begin{pmatrix} \sigma^2_{y1} & \rho_y\sigma_{y1}\sigma_{y2} \\ \rho_y\sigma_{y1}\sigma_{y2} & \sigma^2_{y2} \end{pmatrix} \end{pmatrix}$, $\rho_y=0.8$, $\sigma_{y1}=\sigma_{y2}=1$
+* $p_i = E(\delta_{ij}) = \mathrm{Pr}(\delta_{ij}=1) = \mathrm{Pr}(t_{ij} \leq T)$ is the probability of truncated by death at observed time T for group i
+* $q_i = 1-p_i = \mathrm{Pr}(t_{ij} > T), \quad i = 1, 2$ is the probability of survival at observed time T
+* $q_2 \in \{0.6, 0.8, 0.9\}=\{low, mid, high\}, \quad T = 3$
+* $\text{HR (Hazard Ratio)} \in \{1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30  \}$
+
+#### We want to comapre sequential (T1+T2 vs T1+T3), where T1, T2, T3 are the following
+
+*T1: death only binomial test
+*T2: worst rank wilcoxon signed rank test
+*T3: survivor only wilcoxon signed rank test
+
+
+## (2) Power Simulation
+
+### (a) Survival time follows exponential distribution
+
+#### Power for sequential test, T1 + T2
+
+```{r, include = F, echo = F}
+#Define parameters 
+Delta = c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+q2 = c(0.6, 0.8, 0.9)
+HR = c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)
+time = 3
+N = 5000
+n = 50
+rho_t = 0.8
+rho_Y = 0.8
+alpha = 0.05
+beta = 0.025
+
+simulate.exp.binom <- function(n, q2, HR, time, rho_t){
+  lambda2 = -1 / time * log(q2)
+  lambda1 = lambda2 * HR
+  #q1 = exp(-lambda1 * t)
+  
+  corr_t = matrix(c(1, rho_t, rho_t, 1), nrow = 2)
+  t = rmvexp(n, rate=c(lambda1, lambda2), corr=corr_t)
+  t1 = t[,1]
+  t2 = t[,2]
+  
+  OnlyControlDead = sum(t1 < time & t2 >= time)
+  OnlyTreatedDead = sum(t2 < time & t1 >= time)
+  if (OnlyControlDead == 0 & OnlyTreatedDead == 0) return (-1); # no discordant pair
+  pval = binom.test(c(OnlyControlDead, OnlyTreatedDead), alternative = "greater")$p.value;
+  if (pval <= beta) {return (pval);}
+  else { 
+    if (OnlyTreatedDead == 0) {pval.alt = 0;}
+    else {pval.alt = binom.test(c(OnlyControlDead+1, OnlyTreatedDead-1), alternative = "greater")$p.value;}
+    
+    if (pval.alt > beta) { return (pval); }
+    else {
+      #cat("prob: ", (alpha - pval.alt)/(pval - pval.alt), "pval_alt: ", pval.alt, "\n");
+      return (1 - rbinom(1, 1, (beta - pval.alt)/(pval - pval.alt))); # auxiliary random
+    }
+  }
+}
+
+simulate.exp.both <- function(n, q2, HR, Delta, time, rho_Y, rho_t){
+  lambda2 = -1 / time * log(q2)
+  lambda1 = lambda2 * HR
+  #q1 = exp(-lambda1 * t)
+  
+  corr_t = matrix(c(1, rho_t, rho_t, 1), nrow = 2)
+  t = rmvexp(n, rate=c(lambda1, lambda2), corr=corr_t)
+  t1 = t[,1]
+  t2 = t[,2]
+  
+  corr_Y = matrix(c(1, rho_Y, rho_Y, 1), nrow = 2)
+  Y = rmvnorm(n, mean = c(0, 2^0.5 * Delta), cov = corr_Y)
+  Y1 = Y[,1]
+  Y2 = Y[,2]
+  
+  eta = min(Y) - 1 - time - 2 *(max(Y)-min(Y)) # in order to be worst
+  distmin = min(abs(Y1-Y2))/time/10 # less than minimum difference between Y1 and Y2 divided by time
+  
+  Y1_tilde = Y1 * (t1 >= time) + (eta + t1*distmin) * (t1 < time)
+  Y2_tilde = Y2 * (t2 >= time) + (eta + t2*distmin) * (t2 < time)
+  
+  Y1_survivorOnly = Y1[t1 >= time & t2 >= time]
+  Y2_survivorOnly = Y2[t1 >= time & t2 >= time]
+  
+  if (length(Y1_survivorOnly) == 0) {
+    cat("q2: ", q2, "HR: ", HR, ", length of Y1_survivor is 0 \n")
+    return (c(-1,-1,-1))
+  }
+  # T2
+  pval.2 = wilcox.test(Y1_tilde, Y2_tilde, alternative="less", paired=T)$p.value
+  # T3
+  pval.3 = wilcox.test(Y1_survivorOnly, Y2_survivorOnly, alternative = "less", paired = T)$p.value 
+  # T1
+  OnlyControlDead = sum(t1 < time & t2 >= time)
+  OnlyTreatedDead = sum(t2 < time & t1 >= time)
+  if (OnlyControlDead == 0 & OnlyTreatedDead == 0) {
+    cat("q2: ", q2, "HR: ", HR, ", no discordant pair \n")
+    return (c(-1,-1,-1)); # no discordant pair
+  }
+  pval = binom.test(c(OnlyControlDead, OnlyTreatedDead), alternative = "greater")$p.value;
+  if (pval <= beta) {return (c(pval, pval.2, pval.3));}
+  else { 
+    if (OnlyTreatedDead == 0) {pval.alt = 0;}
+    else {pval.alt = binom.test(c(OnlyControlDead+1, OnlyTreatedDead-1), alternative = "greater")$p.value;}
+    
+    if (pval.alt > beta) { return (c(pval, pval.2, pval.3)); }
+    else {
+      #cat("prob: ", (alpha - pval.alt)/(pval - pval.alt), "pval_alt: ", pval.alt, "\n");
+      return (c(1 - rbinom(1, 1, (beta - pval.alt)/(pval - pval.alt)), pval.2, pval.3)); # auxiliary random 
+    }
+  }
+}
+```
+
+
+```{r, include = F, echo = F}
+power.exp.seqT1T2 = array(data = NA, dim = c(length(q2), length(Delta), length(HR)), 
+                    dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), 
+                                    c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), 
+                                    c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)))
+power.exp.seqT1T3 = array(data = NA, dim = c(length(q2), length(Delta), length(HR)), 
+                    dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), 
+                                    c(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6), 
+                                    c(1.0, 1.2, 1.4, 1.6, 2.0, 2.4, 3.0)))
+
+set.seed(123)
+for (i in 1:length(q2)) {
+  print(q2[i])
+  for (j in 1:length(Delta)) {
+    print(Delta[j])
+    for (k in 1:length(HR)) {
+      count11 = 0
+      count12 = 0
+      count21 = 0
+      count22 = 0
+      total = 0
+      for (l in c(1:N)){
+        pvals = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_Y, rho_t)
+        if (pvals[1] == -1 | pvals[2] == -1 | pvals[3] == -1) {
+          cat("In simulation #: ",l," pvals were ", pvals, "\n")
+          next;
+        }  
+        #T1T2
+        if (pvals[1] <= beta){
+          count11 = count11 + 1
+        } else{
+          if (pvals[2] <= (alpha - beta)){
+            count12 = count12 + 1
+          }
+        }
+        #T1T3
+        if (pvals[1] <= beta){
+          count21 = count21 + 1
+        } else{
+          if (pvals[3] <= (alpha - beta)){
+            count22 = count22 + 1
+          }
+        }
+        total = total + 1
+      }
+      power.exp.seqT1T2[i, j, k] = paste(round((count11 + count12)/total, 3), 
+                                         "(", round(count12/total, 3), ")", sep = "")
+      power.exp.seqT1T3[i, j, k] = paste(round((count21 + count22)/total, 3),
+                                         "(", round(count22/total, 3), ")", sep = "")
+    }
+  }
+}
+```
+
+
+#### results
+
+```{r}
+exp.seqT1T2.q2low = power.exp.seqT1T2[1,,]
+exp.seqT1T3.q2low = power.exp.seqT1T3[1,,]
+
+exp.seqT1T2.q2mid = power.exp.seqT1T2[2,,]
+exp.seqT1T3.q2mid = power.exp.seqT1T3[2,,]
+
+exp.seqT1T2.q2high = power.exp.seqT1T2[3,,]
+exp.seqT1T3.q2high = power.exp.seqT1T3[3,,]
+
+# exp.seqT1T2T3diff.q2low = exp.seqT1T2.q2low - exp.seqT1T3.q2low
+# exp.seqT1T2T3diff.q2mid = exp.seqT1T2.q2mid - exp.seqT1T3.q2mid
+# exp.seqT1T2T3diff.q2high = exp.seqT1T2.q2high - exp.seqT1T3.q2high
+
+cat("Survival Time Follows Expoential Distribution\n")
+
+cat("sequential testing simulation power for T1 + T2, rows are Delta, cols are HR, q2 = 0.6, beta = 0.025\n")
+exp.seqT1T2.q2low
+cat("sequential testing simulation power for T1 + T3, rows are Delta, cols are HR, q2 = 0.6, beta = 0.025\n")
+exp.seqT1T3.q2low
+
+cat("sequential testing simulation power for T1 + T2, rows are Delta, cols are HR, q2 = 0.8, beta = 0.025\n")
+exp.seqT1T2.q2mid
+cat("sequential testing simulation power for T1 + T3, rows are Delta, cols are HR, q2 = 0.8, beta = 0.025\n")
+exp.seqT1T3.q2mid
+
+cat("sequential testing simulation power for T1 + T2, rows are Delta, cols are HR, q2 = 0.9, beta = 0.025\n")
+exp.seqT1T2.q2high
+cat("sequential testing simulation power for T1 + T3, rows are Delta, cols are HR, q2 = 0.9, beta = 0.025\n")
+exp.seqT1T3.q2high
+
+
+# cat("(T1 + T2) - (T1 + T3), rows are Delta, cols are HR, q2 = 0.6, beta = 0.025\n")
+# exp.seqT1T2T3diff.q2low
+# cat("(T1 + T2) - (T1 + T3), rows are Delta, cols are HR, q2 = 0.8, beta = 0.025\n")
+# exp.seqT1T2T3diff.q2mid
+# cat("(T1 + T2) - (T1 + T3), rows are Delta, cols are HR, q2 = 0.9, beta = 0.025\n")
+# exp.seqT1T2T3diff.q2high
+```
+
+#### Conclusion
+
+When Secondary Outcome difference is larger than Primary outcome(death), survivor only is better than worst rank.
+When Primary Outcome difference is larger than secondary outcome(death), worst rank is better than survivor only.
+
+
+#### save to csv
+
+```{r, include = F, echo = F}
+write.csv(exp.seqT1T2.q2low, "tables/exp.seqT1T2.q2low.csv", quote = F)
+write.csv(exp.seqT1T2.q2mid, "tables/exp.seqT1T2.q2mid.csv", quote = F)
+write.csv(exp.seqT1T2.q2high, "tables/exp.seqT1T2.q2high.csv", quote = F)
+write.csv(exp.seqT1T3.q2low, "tables/exp.seqT1T3.q2low.csv", quote = F)
+write.csv(exp.seqT1T3.q2mid, "tables/exp.seqT1T3.q2mid.csv", quote = F)
+write.csv(exp.seqT1T3.q2high, "tables/exp.seqT1T3.q2high.csv", quote = F)
+
+# write.csv(exp.seqT1T2T3diff.q2low, "tables/exp.seqT1T2T3.q2low.csv", quote = F)
+# write.csv(exp.seqT1T2T3diff.q2mid, "tables/exp.seqT1T2T3diff.q2mid.csv", quote = F)
+# write.csv(exp.seqT1T2T3diff.q2high, "tables/exp.seqT1T2T3diff.q2high.csv", quote = F)
+```
+
