@@ -19,15 +19,15 @@ library(dplyr)
 ## (1) Specification: Choose 16 scenarios (HR, Delta_y)
 
 * N: Number of simulations = 5,000
-* n: Number of generated samples per group = 500
+* n: Number of generated samples per group = 50
 * Group2 is treated group 
-* one-sided, alpha = 0.05, beta = 0 ~ 0.05 (by 0.0005)
-* $\Delta_y = \frac{\mu_{y2} - \mu_{y1}}{\sqrt{2}\sigma_{y1}} \in \{0.0, 0.025, 0.05, 0.1\}$ is the primary outcome of interest ($\mu_{y1} = 0$, $\sigma_{y1} = 1$)
+* one-sided, alpha = 0.05, beta = 0 ~ 0.05 (by 0.001)
+* $\Delta_y = \frac{\mu_{y2} - \mu_{y1}}{\sqrt{2}\sigma_{y1}} \in \{0.0, 0.1, 0.2, 0.3\}$ is the primary outcome of interest ($\mu_{y1} = 0$, $\sigma_{y1} = 1$)
 * $\begin{pmatrix} Y_1 \\ Y_2 \end{pmatrix} \sim N \begin{pmatrix} \begin{pmatrix} 0\\\sqrt{2} \Delta_y \end{pmatrix}, \begin{pmatrix} \sigma^2_{y1} & \rho_y\sigma_{y1}\sigma_{y2} \\ \rho_y\sigma_{y1}\sigma_{y2} & \sigma^2_{y2} \end{pmatrix} \end{pmatrix}$, $\rho_y=0.8$, $\sigma_{y1}=\sigma_{y2}=1$
 * $p_i = E(\delta_{ij}) = \mathrm{Pr}(\delta_{ij}=1) = \mathrm{Pr}(t_{ij} \leq T)$ is the probability of truncated by death at observed time T for group i
 * $q_i = 1-p_i = \mathrm{Pr}(t_{ij} > T), \quad i = 1, 2$ is the probability of survival at observed time T
 * $q_2 \in \{0.6, 0.8, 0.9\}=\{low, mid, high\}, \quad T = 3$
-* $\text{HR(Hazard Ratio)} \in \{1, 1.1, 1.2, 1.3\}$
+* $\text{HR(Hazard Ratio)} \in \{1.0, 1.2, 1.4, 1.6\}$
 
 
 ## (2) Power Simulation
@@ -51,9 +51,11 @@ n = 50
 rho_t = 0.8
 rho_Y = 0.8
 alpha = 0.05
-beta = seq(0, 0.05, by=5e-4)
+beta = seq(0, 0.05, by=0.001)
+```
 
-simulate.exp.both <- function(n, q2, HR, Delta, time, rho_Y, rho_t){
+```{r}
+generate.outcomes.exp <- function(n, q2, HR, Delta, time, rho_Y, rho_t){
   lambda2 = -1 / time * log(q2)
   lambda1 = lambda2 * HR
   #q1 = exp(-lambda1 * t)
@@ -77,39 +79,33 @@ simulate.exp.both <- function(n, q2, HR, Delta, time, rho_Y, rho_t){
   Y1_survivorOnly = Y1[t1 >= time & t2 >= time]
   Y2_survivorOnly = Y2[t1 >= time & t2 >= time]
   
-  if (length(Y1_survivorOnly) == 0) {
-    return (c(-1,-1,-1))
-  }
-  # T2 : worst-rank
-  pval.2 = wilcox.test(Y1_tilde, Y2_tilde, alternative="less", paired=T)$p.value
-  # T3 : survivor-only
-  pval.3 = wilcox.test(Y1_survivorOnly, Y2_survivorOnly, alternative = "less", paired = T)$p.value 
-  
   OnlyControlDead = sum(t1 < time & t2 >= time)
   OnlyTreatedDead = sum(t2 < time & t1 >= time)
-  if (OnlyControlDead == 0 & OnlyTreatedDead == 0) return (c(-1,-1,-1)); # no discordant pair
+  
+  return(list(Y1_tilde, Y2_tilde, Y1_survivorOnly, Y2_survivorOnly, OnlyControlDead, OnlyTreatedDead))
+}  
+
+calculate.binom.pval <- function(OnlyControlDead, OnlyTreatedDead, beta) {
   # T1 : binomial
   pval = binom.test(c(OnlyControlDead, OnlyTreatedDead), alternative = "greater")$p.value;
-  if (pval <= alpha) {return (c(pval, pval.2, pval.3));}
+  if (pval <= beta) return (pval)
   else { 
-    if (OnlyTreatedDead == 0) {pval.alt = 0;}
-    else {pval.alt = binom.test(c(OnlyControlDead+1, OnlyTreatedDead-1), alternative = "greater")$p.value;}
+    if (OnlyTreatedDead == 0) {pval.alt = 0}
+    else {pval.alt = binom.test(c(OnlyControlDead+1, OnlyTreatedDead-1), alternative = "greater")$p.value}
     
-    if (pval.alt > alpha) { return (c(pval, pval.2, pval.3)); }
-    else {
-      return (c(1 - rbinom(1, 1, (alpha - pval.alt)/(pval - pval.alt)), pval.2, pval.3)); # auxiliary random 
-    }
+    if (pval.alt > beta) {return (pval)}
+    # auxiliary random 
+    else {return (1 - rbinom(1, 1, (beta - pval.alt)/(pval - pval.alt)))}
   }
 }
 ```
 
 
 ```{r}
-power.exp.seqT1T2 = array(data = NA, dim=c(length(q2), length(Delta), length(HR), length(beta)), dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), c(0.0, 0.1, 0.2, 0.3), c(1.0, 1.2, 1.4, 1.6), seq(0, 0.05, by=5e-4)))
+power.exp.seqT1T2 = array(data = NA, dim=c(length(q2), length(Delta), length(HR), length(beta)), dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), c(0.0, 0.1, 0.2, 0.3), c(1.0, 1.2, 1.4, 1.6), seq(0, 0.05, by=0.001)))
 
-power.exp.seqT1T3 = array(data = NA, dim=c(length(q2), length(Delta), length(HR), length(beta)), dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), c(0.0, 0.1, 0.2, 0.3), c(1.0, 1.2, 1.4, 1.6), seq(0, 0.05, by=5e-4)))
+power.exp.seqT1T3 = array(data = NA, dim=c(length(q2), length(Delta), length(HR), length(beta)), dimnames = list(c("q2=60%", "q2=80%", "q2=90%"), c(0.0, 0.1, 0.2, 0.3), c(1.0, 1.2, 1.4, 1.6), seq(0, 0.05, by=0.001)))
 
-set.seed(123)
 for (i in 1:length(q2)) {
   cat("### q2:", q2[i], "\n")
   for (j in 1:length(Delta)) {
@@ -120,24 +116,39 @@ for (i in 1:length(q2)) {
       count13 = array(0, length(beta))
       total = 0
       for (l in c(1:N)) {
-        pvals = simulate.exp.both(n, q2[i], HR[k], Delta[j], time, rho_Y, rho_t)
-        if (pvals[1] == -1 || pvals[2] == -1 || pvals[3] == -1) {
-          #cat("In simulation #: ",l," pvals were ", pvals, "\n")
-          next;
-        }
-        total = total + 1
+        outcomes = generate.outcomes.exp(n, q2[i], HR[k], Delta[j], time, rho_Y, rho_t)
+        Y1_tilde = outcomes[[1]]
+        Y2_tilde = outcomes[[2]]
+        Y1_survivorOnly = outcomes[[3]]
+        Y2_survivorOnly = outcomes[[4]]
+        OnlyControlDead = outcomes[[5]]
+        OnlyTreatedDead = outcomes[[6]]
+        # if every pair has dead person, pass
+        if (length(Y1_survivorOnly) == 0) next;
+        # if there's no discordant pair, pass
+        if (OnlyControlDead == 0 & OnlyTreatedDead == 0) next;
+        total = total + 1 # denominator
+        
+        # T2 = worst rank
+        pval.wr = wilcox.test(Y1_tilde, Y2_tilde, alternative="less", paired=T)$p.value
+        
+        # T3 = survivors only
+        pval.surv = wilcox.test(Y1_survivorOnly, Y2_survivorOnly, alternative = "less", paired = T)$p.value 
+        
         for (b in 1:length(beta)) {
-          if (pvals[1] <= beta[b]) {
+          pval.binom = calculate.binom.pval(OnlyControlDead, OnlyTreatedDead, b)
+
+          if (pval.binom <= beta[b]) {
             count12[b] = count12[b] + 1
             count13[b] = count13[b] + 1
-            }
+          }
           else {
-            if (pvals[2] <= (alpha - beta[b])) {count12[b] = count12[b] + 1}
-            if (pvals[3] <= (alpha - beta[b])) {count13[b] = count13[b] + 1}
+            if (pval.wr <= (alpha - beta[b])) {count12[b] = count12[b] + 1}
+            if (pval.surv <= (alpha - beta[b])) {count13[b] = count13[b] + 1}
           }
         }
       }
-      cat("total missing =", N-total, "\n")
+      cat("total missing =", N - total, "\n")
       power.exp.seqT1T2[i,j,k,] = count12/total
       power.exp.seqT1T3[i,j,k,] = count13/total
     }
